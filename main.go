@@ -3,10 +3,20 @@ package main
 import (
 	"copy/pkg/ipscan"
 	"fmt"
+	"os"
+	"runtime"
 )
 
 func main() {
-	scanner := ipscan.NewLinuxScanner()
+	var scanner ipscan.Scanner
+	if runtime.GOOS == "linux" {
+		scanner = ipscan.NewLinuxScanner()
+	} else if runtime.GOOS == "windows" {
+		scanner = ipscan.NewWindowsScanner()
+	} else {
+		fmt.Println("Unsupported OS")
+		os.Exit(1)
+	}
 	subnet := scanner.GetLocalSubnet()
 	fmt.Println("Scanning:", subnet)
 

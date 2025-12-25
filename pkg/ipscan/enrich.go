@@ -14,7 +14,7 @@ func EnrichDevices(devices []Device) []Device {
 
 		// Windows NetBIOS fallback
 		if runtime.GOOS == "windows" {
-			if name := netbiosName(ip); name != "" {
+			if name := windowsNetbiosName(ip); name != "" {
 				devices[i].Hostname = name
 			}
 		}
