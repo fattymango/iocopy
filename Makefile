@@ -6,7 +6,7 @@ build-linux:
 
 build-windows:
 	@echo "Building for Windows..."
-	@GOOS=windows GOARCH=amd64 go build -o build/ipscan-windows main.go
+	@GOOS=windows GOARCH=amd64 go build -o build/ipscan-windows.exe main.go
 
 run:
 	@go run .
