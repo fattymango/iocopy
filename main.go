@@ -1,38 +1,20 @@
 package main
 
 import (
-	"copy/pkg/ipscan"
-	"fmt"
-	"os"
-	"runtime"
+	"copy/internal/app"
+	"flag"
+	"log"
 )
 
+const defaultPort = "8080"
+
 func main() {
-	var scanner ipscan.Scanner
-	if runtime.GOOS == "linux" {
-		scanner = ipscan.NewLinuxScanner()
-	} else if runtime.GOOS == "windows" {
-		scanner = ipscan.NewWindowsScanner()
-	} else {
-		fmt.Println("Unsupported OS")
-		os.Exit(1)
-	}
-	subnet := scanner.GetLocalSubnet()
-	fmt.Println("Scanning:", subnet)
+	port := flag.String("port", defaultPort, "Port to listen on and connect to")
+	flag.Parse()
 
-	// pingSubnet(scanner, subnet)
-
-	devices, err := scanner.Scan(subnet)
+	app, err := app.NewApp(*port)
 	if err != nil {
-		fmt.Println("Error scanning subnet:", err)
-		return
+		log.Fatalf("failed to create new app, %s", err)
 	}
-	devices = ipscan.EnrichDevices(devices)
-	devices = ipscan.FilterDevices(devices)
-	devices = ipscan.DetectDevicesType(devices)
-	fmt.Printf("\n%-15s %-25s %-20s %-15s\n", "IP", "HOSTNAME", "MAC", "TYPE")
-	for _, d := range devices {
-		fmt.Printf("%-15s %-25s %-20s %-15s\n", d.IP, d.Hostname, d.MAC, d.Type)
-	}
-
+	app.Run()
 }
