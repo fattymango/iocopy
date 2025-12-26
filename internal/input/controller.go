@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime"
 )
 
 // Controller captures local input and sends it to the remote peer
@@ -24,16 +25,21 @@ func NewController(client *wire.Client) *Controller {
 // Start begins capturing and forwarding input events
 func (c *Controller) Start() error {
 	log.Printf("[input] Starting input controller...")
+	var capture InputCapture
+	var err error
 
-	// Start platform-specific input capture
-	capture, err := NewInputCapture()
-	if err != nil {
-		log.Printf("[input] Warning: Input capture not available: %v", err)
-		log.Printf("[input] Connection will stay alive but input won't be captured")
-		// Keep connection alive even without capture
-		<-c.stopCh
-		return nil
+	switch runtime.GOOS {
+	case "linux":
+		capture, err = NewLinuxInputCapture()
+	case "windows":
+		capture, err = NewWindowsInputCapture()
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
+	if err != nil {
+		return fmt.Errorf("failed to create input capture: %w", err)
+	}
+	// Start platform-specific input capture
 	defer capture.Close()
 
 	log.Printf("[input] Input capture initialized successfully")

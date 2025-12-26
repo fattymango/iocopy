@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime"
 )
 
 // Receiver receives input events and executes them locally
@@ -14,7 +15,17 @@ type Receiver struct {
 
 // NewReceiver creates a new input receiver
 func NewReceiver() (*Receiver, error) {
-	executor, err := NewInputExecutor()
+	var executor InputExecutor
+	var err error
+
+	switch runtime.GOOS {
+	case "linux":
+		executor, err = NewLinuxInputExecutor()
+	case "windows":
+		executor, err = NewWindowsInputExecutor()
+	default:
+		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create input executor: %w", err)
 	}
@@ -79,4 +90,3 @@ func (r *Receiver) Close() error {
 	}
 	return nil
 }
-
