@@ -1,6 +1,7 @@
 package app
 
 import (
+	"copy/internal/input"
 	"copy/internal/wire"
 	"log"
 	"net"
@@ -15,16 +16,27 @@ func (a *App) startServer() error {
 	return nil
 
 }
+
 func handleServerConnection(s *wire.Server, conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().(*net.TCPAddr)
 	remoteIP := remoteAddr.IP.String()
 
-	log.Printf("[server] Connection accepted from %s, starting handler", remoteIP)
+	log.Printf("[server] Connection accepted from %s", remoteIP)
+	log.Printf("[server] Remote peer is taking control of this device")
+
+	// Create input receiver to execute received input events
+	receiver, err := input.NewReceiver()
+	if err != nil {
+		log.Printf("[server] Failed to create input receiver: %v", err)
+		conn.Close()
+		return
+	}
+	defer receiver.Close()
 
 	// Handle connection immediately (already in a goroutine from server.Start)
 	defer func() {
 		conn.Close()
-		log.Printf("[server] Connection closed with %s", remoteIP)
+		log.Printf("[server] Connection closed with %s - control session ended", remoteIP)
 	}()
 
 	for {
@@ -33,17 +45,26 @@ func handleServerConnection(s *wire.Server, conn net.Conn) {
 			log.Printf("[server] Read error from %s: %v", remoteIP, err)
 			return
 		}
-		log.Printf("[server] Received from %s - Type: %s, Data: %s", remoteIP, msg.Type, msg.Data)
 
-		// Ping-pong: echo back immediately
-		response := &wire.Message{
-			Type: "pong",
-			Data: msg.Data,
+		// Handle different message types
+		switch msg.Type {
+		case "control_start":
+			log.Printf("[server] Control session started by %s", remoteIP)
+			// Acknowledge control start
+			ack := &wire.Message{
+				Type: "control_ack",
+				Data: "Control session acknowledged",
+			}
+			if err := wire.Send(conn, ack); err != nil {
+				log.Printf("[server] Failed to send control ack: %v", err)
+			}
+		case "input_event":
+			if err := receiver.HandleMessage(&msg); err != nil {
+				log.Printf("[server] Failed to handle input event: %v", err)
+				// Continue processing other events
+			}
+		default:
+			log.Printf("[server] Received unknown message type from %s: %s", remoteIP, msg.Type)
 		}
-		if err := wire.Send(conn, response); err != nil {
-			log.Printf("[server] Write error to %s: %v", remoteIP, err)
-			return
-		}
-		log.Printf("[server] Sent pong to %s", remoteIP)
 	}
 }

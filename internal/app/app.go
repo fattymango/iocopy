@@ -62,11 +62,11 @@ func (a *App) Run() error {
 			continue
 		}
 
-		// Connect to selected IP and do ping-pong (blocks until connection fails)
+		// Connect to selected IP and gain control (blocks until Ctrl+Shift+B or connection fails)
 		log.Printf("[app] Connecting to %s:%s...", selectedIP, a.port)
-		if err := runPingPong(selectedIP, a.port, getLocalIP()); err != nil {
-			log.Printf("[app] Connection lost: %v", err)
-			fmt.Println("\nConnection lost. Returning to peer selection...")
+		if err := runControl(selectedIP, a.port); err != nil {
+			log.Printf("[app] Control session ended: %v", err)
+			fmt.Println("\nControl session ended. Returning to peer selection...")
 			// Loop again to rescan and prompt
 		}
 	}
