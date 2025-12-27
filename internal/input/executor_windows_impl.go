@@ -4,6 +4,8 @@ import (
 	"log"
 	"runtime"
 	"unsafe"
+	
+	"golang.org/x/sys/windows"
 )
 
 // WindowsInputExecutor executes input on Windows
@@ -16,11 +18,14 @@ func NewWindowsInputExecutor() (InputExecutor, error) {
 	return &WindowsInputExecutor{}, nil
 }
 
+// INPUT structure for Windows SendInput
+// Windows INPUT is 40 bytes on 64-bit: Type(4) + padding(4) + union(32)
+// The union must be aligned to 8-byte boundary, so we add padding before KEYBDINPUT
 type INPUT struct {
 	Type uint32
-	Ki   KEYBDINPUT
-	Mi   MOUSEINPUT
-	Hi   HARDWAREINPUT
+	_    [4]byte     // Padding to align union to 8-byte boundary
+	Ki   KEYBDINPUT  // KEYBDINPUT starts at offset 8
+	_    [8]byte     // Padding to make total size 40 bytes (KEYBDINPUT is 20 bytes, so 8 more needed)
 }
 
 type KEYBDINPUT struct {
@@ -58,6 +63,7 @@ const (
 	MOUSEEVENTF_MIDDLEUP   = 0x0040
 	MOUSEEVENTF_WHEEL      = 0x0800
 	MOUSEEVENTF_ABSOLUTE   = 0x8000
+	VK_MENU                = 0x12 // Alt key
 )
 
 var keyMap = map[string]uint16{
@@ -75,44 +81,140 @@ func (w *WindowsInputExecutor) ExecuteKeyboard(event KeyboardEvent) error {
 		return nil
 	}
 
+	// Skip modifier keys themselves - they're handled separately
+	if event.Key == "Control_L" || event.Key == "Shift_L" {
+		return nil
+	}
+
 	vkCode, ok := keyMap[event.Key]
 	if !ok {
-		// Try to parse as hex or use default
 		log.Printf("[input] Unknown key: %s", event.Key)
 		return nil
 	}
 
-	var inputs [1]INPUT
-	inputs[0].Type = INPUT_KEYBOARD
-	inputs[0].Ki.Vk = vkCode
-	inputs[0].Ki.Flags = 0
-	if event.Action == "release" {
-		inputs[0].Ki.Flags = KEYEVENTF_KEYUP
+	log.Printf("[input] Executing keyboard event: Key=%s, Action=%s, Modifiers=%v", event.Key, event.Action, event.Modifiers)
+
+	if event.Action == "press" {
+		// For press: send modifiers down first, then the key
+		var inputs []INPUT
+
+		// Press modifiers first
+		if contains(event.Modifiers, "ctrl") {
+			ctrlInput := INPUT{
+				Type: INPUT_KEYBOARD,
+				Ki: KEYBDINPUT{
+					Vk:    VK_CONTROL,
+					Flags: 0,
+				},
+			}
+			inputs = append(inputs, ctrlInput)
+		}
+		if contains(event.Modifiers, "shift") {
+			shiftInput := INPUT{
+				Type: INPUT_KEYBOARD,
+				Ki: KEYBDINPUT{
+					Vk:    VK_SHIFT,
+					Flags: 0,
+				},
+			}
+			inputs = append(inputs, shiftInput)
+		}
+		if contains(event.Modifiers, "alt") {
+			altInput := INPUT{
+				Type: INPUT_KEYBOARD,
+				Ki: KEYBDINPUT{
+					Vk:    VK_MENU,
+					Flags: 0,
+				},
+			}
+			inputs = append(inputs, altInput)
+		}
+
+		// Then press the key
+		keyInput := INPUT{
+			Type: INPUT_KEYBOARD,
+			Ki: KEYBDINPUT{
+				Vk:    vkCode,
+				Flags: 0,
+			},
+		}
+		inputs = append(inputs, keyInput)
+
+		// Send all inputs at once
+		if len(inputs) > 0 {
+			ret, _, err := procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(INPUT{}))
+			if ret == 0 {
+				// Get the actual Windows error code
+				kernel32 := windows.NewLazyDLL("kernel32.dll")
+				procGetLastError := kernel32.NewProc("GetLastError")
+				errCode, _, _ := procGetLastError.Call()
+				log.Printf("[input] SendInput failed for key press: error code %d, errno %v, input size %d, inputs count %d", errCode, err, unsafe.Sizeof(INPUT{}), len(inputs))
+			} else {
+				log.Printf("[input] SendInput succeeded: sent %d inputs", ret)
+			}
+		}
+	} else if event.Action == "release" {
+		// For release: release the key first, then the modifiers
+		var inputs []INPUT
+
+		// Release the key first
+		keyInput := INPUT{
+			Type: INPUT_KEYBOARD,
+			Ki: KEYBDINPUT{
+				Vk:    vkCode,
+				Flags: KEYEVENTF_KEYUP,
+			},
+		}
+		inputs = append(inputs, keyInput)
+
+		// Then release modifiers (in reverse order)
+		if contains(event.Modifiers, "alt") {
+			altInput := INPUT{
+				Type: INPUT_KEYBOARD,
+				Ki: KEYBDINPUT{
+					Vk:    VK_MENU,
+					Flags: KEYEVENTF_KEYUP,
+				},
+			}
+			inputs = append(inputs, altInput)
+		}
+		if contains(event.Modifiers, "shift") {
+			shiftInput := INPUT{
+				Type: INPUT_KEYBOARD,
+				Ki: KEYBDINPUT{
+					Vk:    VK_SHIFT,
+					Flags: KEYEVENTF_KEYUP,
+				},
+			}
+			inputs = append(inputs, shiftInput)
+		}
+		if contains(event.Modifiers, "ctrl") {
+			ctrlInput := INPUT{
+				Type: INPUT_KEYBOARD,
+				Ki: KEYBDINPUT{
+					Vk:    VK_CONTROL,
+					Flags: KEYEVENTF_KEYUP,
+				},
+			}
+			inputs = append(inputs, ctrlInput)
+		}
+
+		// Send all inputs at once
+		if len(inputs) > 0 {
+			ret, _, err := procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(INPUT{}))
+			if ret == 0 {
+				// Get the actual Windows error code
+				// Get the actual Windows error code
+				kernel32 := windows.NewLazyDLL("kernel32.dll")
+				procGetLastError := kernel32.NewProc("GetLastError")
+				errCode, _, _ := procGetLastError.Call()
+				log.Printf("[input] SendInput failed for key release: error code %d, errno %v, input size %d, inputs count %d", errCode, err, unsafe.Sizeof(INPUT{}), len(inputs))
+			} else {
+				log.Printf("[input] SendInput succeeded: sent %d inputs", ret)
+			}
+		}
 	}
 
-	// Handle modifiers
-	if contains(event.Modifiers, "ctrl") {
-		// Send Ctrl
-		var ctrlInput INPUT
-		ctrlInput.Type = INPUT_KEYBOARD
-		ctrlInput.Ki.Vk = VK_CONTROL
-		if event.Action == "release" {
-			ctrlInput.Ki.Flags = KEYEVENTF_KEYUP
-		}
-		procSendInput.Call(1, uintptr(unsafe.Pointer(&ctrlInput)), unsafe.Sizeof(INPUT{}))
-	}
-	if contains(event.Modifiers, "shift") {
-		// Send Shift
-		var shiftInput INPUT
-		shiftInput.Type = INPUT_KEYBOARD
-		shiftInput.Ki.Vk = VK_SHIFT
-		if event.Action == "release" {
-			shiftInput.Ki.Flags = KEYEVENTF_KEYUP
-		}
-		procSendInput.Call(1, uintptr(unsafe.Pointer(&shiftInput)), unsafe.Sizeof(INPUT{}))
-	}
-
-	procSendInput.Call(1, uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(INPUT{}))
 	return nil
 }
 

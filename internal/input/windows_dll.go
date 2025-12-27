@@ -46,3 +46,8 @@ func initWindowsDLLs() error {
 	return nil
 }
 
+func getLastError() uint32 {
+	ret, _, _ := kernel32.NewProc("GetLastError").Call()
+	return uint32(ret)
+}
+
