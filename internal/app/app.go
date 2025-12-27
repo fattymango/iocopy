@@ -1,13 +1,15 @@
 package app
 
 import (
-	"bufio"
 	"copy/internal/wire"
-	"fmt"
+	"embed"
+	"io/fs"
 	"log"
-	"os"
 	"runtime"
-	"strings"
+
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
 const defaultPort = "8080"
@@ -25,48 +27,40 @@ func NewApp(port string) (*App, error) {
 	}, nil
 }
 
+//go:embed all:frontend
+var frontendAssets embed.FS
+
 func (a *App) Run() error {
 	log.Printf("[app] Starting on %s", runtime.GOOS)
 	log.Printf("[app] Local IP: %s", getLocalIP())
-	err := a.startServer()
-	if err != nil {
+
+	if err := a.startServer(); err != nil {
 		return err
 	}
-	// Scan and let user choose IP or search again
-	scanner := bufio.NewScanner(os.Stdin)
 
-	for {
-		// Scan and find reachable IPs
-		reachableIPs := findReachableIPs(a.port)
+	ui := NewUI(a)
 
-		if len(reachableIPs) == 0 {
-			fmt.Println("\n[app] No reachable peers found.")
-			fmt.Print("Press Enter to search again, or 'q' to quit: ")
-			if !scanner.Scan() {
-				break
-			}
-			input := strings.TrimSpace(scanner.Text())
-			if input == "q" || input == "Q" {
-				break
-			}
-			continue
-		}
-
-		// Prompt user to select an IP
-		selectedIP := promptUserSelection(reachableIPs, scanner)
-		if selectedIP == "" {
-			// User chose to refresh or invalid input, loop again to rescan
-			continue
-		}
-
-		// Connect to selected IP and gain control (blocks until Ctrl+Shift+B or connection fails)
-		log.Printf("[app] Connecting to %s:%s...", selectedIP, a.port)
-		if err := runControl(selectedIP, a.port); err != nil {
-			log.Printf("[app] Control session ended: %v", err)
-			fmt.Println("\nControl session ended. Returning to peer selection...")
-			// Loop again to rescan and prompt
-		}
+	// Create asset server with embedded HTML
+	htmlFS, err := fs.Sub(frontendAssets, "frontend")
+	if err != nil {
+		log.Printf("[frontend] Failed to create sub FS: %v", err)
+		htmlFS = frontendAssets
 	}
 
-	return nil
+	assetServer := &assetserver.Options{
+		Assets: htmlFS,
+	}
+
+	return wails.Run(&options.App{
+		Title:  "IOCopy",
+		Width:  420,
+		Height: 500,
+
+		AssetServer: assetServer,
+
+		OnStartup: ui.Startup,
+		Bind: []interface{}{
+			ui,
+		},
+	})
 }
