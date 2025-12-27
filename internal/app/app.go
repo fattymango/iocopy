@@ -18,13 +18,10 @@ type App struct {
 }
 
 func NewApp(port string) (*App, error) {
-	server, err := wire.NewServer(fmt.Sprintf(":%s", port))
-	if err != nil {
-		return nil, err
-	}
+	// Don't create server immediately - create it lazily when needed
+	// This prevents issues when Wails tries to generate bindings
 	return &App{
-		port:   port,
-		server: server,
+		port: port,
 	}, nil
 }
 

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<style>
+		* {
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+		}
+		body, html {
+			width: 100%;
+			height: 100%;
+			background-color: #000000;
+			overflow: hidden;
+		}
+	</style>
+</head>
+<body>
+	<script>
+		// Listen for Ctrl+Shift+B hotkey
+		document.addEventListener('keydown', function(e) {
+			if (e.key === 'B' || e.key === 'b') {
+				if (e.ctrlKey && e.shiftKey) {
+					e.preventDefault();
+					// Signal hotkey detected
+					window.go.main.App.OnHotkey();
+				}
+			}
+		});
+
+		// Prevent context menu
+		document.addEventListener('contextmenu', function(e) {
+			e.preventDefault();
+		});
+
+		// Prevent default behaviors
+		document.addEventListener('selectstart', function(e) {
+			e.preventDefault();
+		});
+	</script>
+</body>
+</html>
+
+

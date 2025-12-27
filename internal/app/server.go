@@ -3,11 +3,21 @@ package app
 import (
 	"copy/internal/input"
 	"copy/internal/wire"
+	"fmt"
 	"log"
 	"net"
 )
 
 func (a *App) startServer() error {
+	// Create server lazily when actually starting
+	if a.server == nil {
+		server, err := wire.NewServer(fmt.Sprintf(":%s", a.port))
+		if err != nil {
+			return fmt.Errorf("failed to start server on port %s: %w. Make sure no other instance is running or use a different port with -port flag", a.port, err)
+		}
+		a.server = server
+	}
+	
 	err := a.server.Start(handleServerConnection)
 	if err != nil {
 		return err

@@ -17,7 +17,14 @@ type Server struct {
 func NewServer(addr string) (*Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, err
+		// Check if it's a port already in use error
+		if opErr, ok := err.(*net.OpError); ok {
+			if opErr.Err.Error() == "bind: Only one usage of each socket address (protocol/network address/port) is normally permitted." || 
+			   opErr.Err.Error() == "bind: address already in use" {
+				return nil, fmt.Errorf("port %s is already in use. Please close the existing instance or use a different port with -port flag", addr)
+			}
+		}
+		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
 	return &Server{

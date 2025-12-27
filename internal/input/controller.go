@@ -10,8 +10,9 @@ import (
 
 // Controller captures local input and sends it to the remote peer
 type Controller struct {
-	client *wire.Client
-	stopCh chan struct{}
+	client       *wire.Client
+	stopCh       chan struct{}
+	blackScreen  *BlackScreenWindow
 }
 
 // NewController creates a new input controller
@@ -25,6 +26,26 @@ func NewController(client *wire.Client) *Controller {
 // Start begins capturing and forwarding input events
 func (c *Controller) Start() error {
 	log.Printf("[input] Starting input controller...")
+	
+	// Create and show black screen window (Windows only)
+	if runtime.GOOS == "windows" {
+		blackScreen, err := NewBlackScreenWindow()
+		if err != nil {
+			log.Printf("[input] Warning: Failed to create black screen: %v", err)
+		} else {
+			c.blackScreen = blackScreen
+			if err := blackScreen.Show(); err != nil {
+				log.Printf("[input] Warning: Failed to show black screen: %v", err)
+			}
+		}
+		// Ensure black screen is destroyed when done
+		defer func() {
+			if c.blackScreen != nil {
+				c.blackScreen.Close()
+			}
+		}()
+	}
+	
 	var capture InputCapture
 	var err error
 
@@ -73,6 +94,12 @@ func (c *Controller) Start() error {
 	}
 	log.Printf("[input] Control session established")
 
+	// Check for hotkey from black screen window (Windows only)
+	var hotkeyCh <-chan struct{}
+	if runtime.GOOS == "windows" && c.blackScreen != nil {
+		hotkeyCh = c.blackScreen.GetHotkeyChannel()
+	}
+
 	// Forward events to remote peer
 	for {
 		select {
@@ -97,8 +124,8 @@ func (c *Controller) Start() error {
 				continue
 			}
 
-			// Check for stop hotkey (Ctrl+Shift+B)
-			if event.Type == "keyboard" {
+			// Check for stop hotkey (Ctrl+Shift+B) - only if not from black screen
+			if event.Type == "keyboard" && hotkeyCh == nil {
 				var kbEvent KeyboardEvent
 				if err := json.Unmarshal([]byte(event.Data), &kbEvent); err == nil {
 					if kbEvent.Key == "b" &&
@@ -121,6 +148,11 @@ func (c *Controller) Start() error {
 				return fmt.Errorf("failed to send input event: %w", err)
 			}
 			log.Printf("[input] Sent input event: %s", event.Type)
+
+		case <-hotkeyCh:
+			// Hotkey detected from black screen window
+			log.Printf("[input] Stop hotkey detected (Ctrl+Shift+B) from black screen")
+			return fmt.Errorf("control stopped by user")
 
 		case <-c.stopCh:
 			log.Printf("[input] Controller stopped")
