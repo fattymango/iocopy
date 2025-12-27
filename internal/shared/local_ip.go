@@ -1,12 +1,11 @@
-package app
+package shared
 
 import (
 	"log"
 	"net"
-	"time"
 )
 
-func getLocalIP() string {
+func GetLocalIP() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		log.Fatalf("Failed to get interfaces: %v", err)
@@ -33,13 +32,3 @@ func getLocalIP() string {
 	}
 	return "unknown"
 }
-
-func isReachable(ip, port string) bool {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, port), 2*time.Second)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-

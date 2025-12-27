@@ -1,17 +1,19 @@
-package app
+package ui
 
 import (
 	"context"
+	"copy/internal/shared"
 	"log"
 )
 
 type UI struct {
-	app *App
-	ctx context.Context
+	app  Application
+	ctx  context.Context
+	port string
 }
 
-func NewUI(app *App) *UI {
-	return &UI{app: app}
+func NewUI(app Application, port string) *UI {
+	return &UI{app: app, port: port}
 }
 
 func (u *UI) Startup(ctx context.Context) {
@@ -22,16 +24,16 @@ func (u *UI) Startup(ctx context.Context) {
 // Called by frontend to scan peers
 func (u *UI) ScanPeers() []string {
 	log.Println("[ui] Scanning for peers...")
-	return findReachableIPs(u.app.port)
+	return u.app.FindReachableIPs(u.port)
 }
 
 // Called by frontend when user selects an IP
 func (u *UI) Connect(ip string) error {
-	log.Printf("[ui] Connecting to %s:%s", ip, u.app.port)
-	return runControl(ip, u.app.port)
+	log.Printf("[ui] Connecting to %s:%s", ip, u.port)
+	return u.app.RunControl(ip, u.port)
 }
 
 // Optional: expose local IP
 func (u *UI) LocalIP() string {
-	return getLocalIP()
+	return shared.GetLocalIP()
 }

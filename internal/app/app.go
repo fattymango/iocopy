@@ -1,15 +1,15 @@
 package app
 
 import (
+	"copy/internal/shared"
+	"copy/internal/ui"
 	"copy/internal/wire"
-	"embed"
-	"io/fs"
+	"fmt"
 	"log"
 	"runtime"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
 const defaultPort = "8080"
@@ -27,36 +27,27 @@ func NewApp(port string) (*App, error) {
 	}, nil
 }
 
-//go:embed all:frontend
-var frontendAssets embed.FS
-
 func (a *App) Run() error {
 	log.Printf("[app] Starting on %s", runtime.GOOS)
-	log.Printf("[app] Local IP: %s", getLocalIP())
+	log.Printf("[app] Local IP: %s", shared.GetLocalIP())
 
 	if err := a.startServer(); err != nil {
 		return err
 	}
 
-	ui := NewUI(a)
-
-	// Create asset server with embedded HTML
-	htmlFS, err := fs.Sub(frontendAssets, "frontend")
+	assetServer, err := ui.NewAssetServer()
 	if err != nil {
-		log.Printf("[frontend] Failed to create sub FS: %v", err)
-		htmlFS = frontendAssets
+		return fmt.Errorf("failed to create asset server: %v", err)
 	}
 
-	assetServer := &assetserver.Options{
-		Assets: htmlFS,
-	}
+	ui := ui.NewUI(a, a.port)
 
 	return wails.Run(&options.App{
 		Title:  "IOCopy",
 		Width:  420,
 		Height: 500,
 
-		AssetServer: assetServer,
+		AssetServer: assetServer.GetServer(),
 
 		OnStartup: ui.Startup,
 		Bind: []interface{}{

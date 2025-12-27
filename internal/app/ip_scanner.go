@@ -1,11 +1,44 @@
 package app
 
 import (
+	"copy/internal/shared"
 	"copy/pkg/ipscan"
 	"log"
+	"net"
 	"runtime"
 	"sync"
+	"time"
 )
+
+func (a *App) FindReachableIPs(port string) []string {
+	localIP := shared.GetLocalIP()
+	log.Printf("[scan] Scanning for reachable peers...")
+
+	devices := scanAndFilterDevices()
+	var reachableIPs []string
+
+	log.Printf("[scan] Found %d devices, checking reachability...", len(devices))
+
+	wg := sync.WaitGroup{}
+	for _, device := range devices {
+		if device.IP == localIP {
+			continue
+		}
+		wg.Add(1)
+		go func(device ipscan.Device) {
+			defer wg.Done()
+			if isReachable(device.IP, port) {
+				reachableIPs = append(reachableIPs, device.IP)
+				log.Printf("[scan] Found reachable peer: %s (%s)", device.IP, device.Hostname)
+			}
+		}(device)
+	}
+
+	wg.Wait()
+	log.Printf("[scan] All reachability checks completed")
+
+	return reachableIPs
+}
 
 func scanAndFilterDevices() []ipscan.Device {
 	var scanner ipscan.Scanner
@@ -36,32 +69,11 @@ func scanAndFilterDevices() []ipscan.Device {
 	return devices
 }
 
-func findReachableIPs(port string) []string {
-	localIP := getLocalIP()
-	log.Printf("[scan] Scanning for reachable peers...")
-
-	devices := scanAndFilterDevices()
-	var reachableIPs []string
-
-	log.Printf("[scan] Found %d devices, checking reachability...", len(devices))
-
-	wg := sync.WaitGroup{}
-	for _, device := range devices {
-		if device.IP == localIP {
-			continue
-		}
-		wg.Add(1)
-		go func(device ipscan.Device) {
-			defer wg.Done()
-			if isReachable(device.IP, port) {
-				reachableIPs = append(reachableIPs, device.IP)
-				log.Printf("[scan] Found reachable peer: %s (%s)", device.IP, device.Hostname)
-			}
-		}(device)
+func isReachable(ip, port string) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, port), 2*time.Second)
+	if err != nil {
+		return false
 	}
-
-	wg.Wait()
-	log.Printf("[scan] All reachability checks completed")
-
-	return reachableIPs
+	conn.Close()
+	return true
 }

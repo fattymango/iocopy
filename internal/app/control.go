@@ -8,7 +8,7 @@ import (
 )
 
 // runControl establishes control over the remote peer's keyboard and mouse
-func runControl(targetIP, port string) error {
+func (a *App) RunControl(targetIP, port string) error {
 	log.Printf("[control] Attempting to connect to %s:%s...", targetIP, port)
 	client, err := wire.NewClient(targetIP, port)
 	if err != nil {
@@ -37,5 +37,3 @@ func runControl(targetIP, port string) error {
 	log.Printf("[control] Control session ended normally")
 	return nil
 }
-
-

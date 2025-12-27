@@ -133,7 +133,7 @@
       rescanBtn.style.display = "none"
 
       try {
-        const ips = await window.go.app.UI.ScanPeers()
+        const ips = await window.go.ui.UI.ScanPeers()
 
         spinner.style.display = "none"
 
@@ -167,7 +167,7 @@
       status.textContent = "Control session active..."
 
       try {
-        await window.go.app.UI.Connect(ip)
+        await window.go.ui.UI.Connect(ip)
       } catch (err) {
         console.error(err)
       }

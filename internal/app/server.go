@@ -17,7 +17,7 @@ func (a *App) startServer() error {
 		}
 		a.server = server
 	}
-	
+
 	err := a.server.Start(handleServerConnection)
 	if err != nil {
 		return err
