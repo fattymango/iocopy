@@ -10,9 +10,9 @@ import (
 
 // Controller captures local input and sends it to the remote peer
 type Controller struct {
-	client       *wire.Client
-	stopCh       chan struct{}
-	blackScreen  *BlackScreenWindow
+	client      *wire.Client
+	stopCh      chan struct{}
+	blackScreen *BlackScreenWindow
 }
 
 // NewController creates a new input controller
@@ -26,7 +26,7 @@ func NewController(client *wire.Client) *Controller {
 // Start begins capturing and forwarding input events
 func (c *Controller) Start() error {
 	log.Printf("[input] Starting input controller...")
-	
+
 	// Create and show black screen window (Windows only)
 	if runtime.GOOS == "windows" {
 		blackScreen, err := NewBlackScreenWindow()
@@ -45,7 +45,7 @@ func (c *Controller) Start() error {
 			}
 		}()
 	}
-	
+
 	var capture InputCapture
 	var err error
 

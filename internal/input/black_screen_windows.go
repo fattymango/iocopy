@@ -29,6 +29,7 @@ type BlackScreenApp struct {
 
 // OnHotkey is called from JavaScript when Ctrl+Shift+B is pressed
 func (a *BlackScreenApp) OnHotkey() {
+	log.Printf("[blackscreen] Hotkey pressed")
 	select {
 	case a.hotkeyCh <- struct{}{}:
 	default:
