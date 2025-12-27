@@ -21,10 +21,11 @@ type MouseMoveEvent struct {
 
 // MouseClickEvent represents a mouse button click
 type MouseClickEvent struct {
-	Button string `json:"button"` // "left", "right", "middle"
-	Action string `json:"action"` // "press", "release"
-	X      int    `json:"x"`
-	Y      int    `json:"y"`
+	Button    string `json:"button"`    // "left", "right", "middle"
+	Action    string `json:"action"`    // "press", "release", "double"
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	IsDouble  bool   `json:"is_double,omitempty"` // true if this is a double click
 }
 
 // MouseScrollEvent represents mouse wheel scroll

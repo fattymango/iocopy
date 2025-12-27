@@ -27,6 +27,9 @@ const (
 	VK_CONTROL     = 0x11
 	VK_SHIFT       = 0x10
 	VK_B           = 0x42
+	VK_LBUTTON     = 0x01
+	VK_RBUTTON     = 0x02
+	VK_MBUTTON     = 0x04
 )
 
 type POINT struct {
@@ -169,6 +172,17 @@ func (w *WindowsInputCapture) captureMouse(eventCh chan<- InputEvent, stopCh <-c
 	}
 
 	var lastX, lastY int32
+	buttonStates := make(map[uint32]bool) // Track button press states
+	lastClickTime := make(map[uint32]int64) // Track last click time for double-click detection
+	lastClickPos := make(map[uint32]POINT) // Track last click position
+	inDoubleClickSequence := make(map[uint32]bool) // Track if we're in a double-click sequence
+
+	// Button mappings
+	buttons := map[uint32]string{
+		VK_LBUTTON: "left",
+		VK_RBUTTON: "right",
+		VK_MBUTTON: "middle",
+	}
 
 	for {
 		select {
@@ -178,6 +192,7 @@ func (w *WindowsInputCapture) captureMouse(eventCh chan<- InputEvent, stopCh <-c
 			var pt POINT
 			procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 
+			// Check mouse movement
 			if pt.X != lastX || pt.Y != lastY {
 				moveEvent := MouseMoveEvent{
 					X: int(pt.X),
@@ -192,10 +207,105 @@ func (w *WindowsInputCapture) captureMouse(eventCh chan<- InputEvent, stopCh <-c
 			}
 
 			// Check mouse buttons
-			// Left button = 0x01, Right = 0x02, Middle = 0x10
-			// This is simplified - full implementation would use hooks
+			now := time.Now().UnixNano()
+			doubleClickDelay := int64(500 * time.Millisecond) // Windows default double-click time (~500ms)
+			maxDoubleClickDistance := int32(5) // Maximum pixels for double-click detection
 
-			time.Sleep(16 * time.Millisecond) // ~60fps polling
+			for vkCode, buttonName := range buttons {
+				state, _, _ := procGetAsyncKeyState.Call(uintptr(vkCode))
+				isPressed := (state & 0x8000) != 0
+				wasPressed := buttonStates[vkCode]
+
+				if isPressed != wasPressed {
+					buttonStates[vkCode] = isPressed
+
+					if isPressed {
+						// Button pressed
+						// Check for double click (second press within time/distance window)
+						lastTime, hadPreviousClick := lastClickTime[vkCode]
+						lastPos, hadPreviousPos := lastClickPos[vkCode]
+						isDoubleClick := false
+
+						if hadPreviousClick && hadPreviousPos {
+							timeSinceLastClick := now - lastTime
+							distanceX := pt.X - lastPos.X
+							if distanceX < 0 {
+								distanceX = -distanceX
+							}
+							distanceY := pt.Y - lastPos.Y
+							if distanceY < 0 {
+								distanceY = -distanceY
+							}
+
+							if timeSinceLastClick < doubleClickDelay &&
+								distanceX < maxDoubleClickDistance &&
+								distanceY < maxDoubleClickDistance {
+								isDoubleClick = true
+								inDoubleClickSequence[vkCode] = true // Mark that we're in a double-click sequence
+							}
+						}
+
+						if isDoubleClick {
+							// Send double-click event (executor will send full press/release/press/release sequence)
+							clickEvent := MouseClickEvent{
+								Button:   buttonName,
+								Action:   "double",
+								X:        int(pt.X),
+								Y:        int(pt.Y),
+								IsDouble: true,
+							}
+							data, _ := json.Marshal(clickEvent)
+							eventCh <- InputEvent{
+								Type: "mouse_click",
+								Data: string(data),
+							}
+						} else {
+							// Normal single click press
+							clickEvent := MouseClickEvent{
+								Button:   buttonName,
+								Action:   "press",
+								X:        int(pt.X),
+								Y:        int(pt.Y),
+								IsDouble: false,
+							}
+							data, _ := json.Marshal(clickEvent)
+							eventCh <- InputEvent{
+								Type: "mouse_click",
+								Data: string(data),
+							}
+						}
+
+						lastClickTime[vkCode] = now
+						lastClickPos[vkCode] = pt
+					} else {
+						// Button released
+						// If we're in a double-click sequence, skip sending the release
+						// because the executor already sends press/release/press/release for double clicks
+						if inDoubleClickSequence[vkCode] {
+							inDoubleClickSequence[vkCode] = false // Reset flag
+							// Don't send release event for double-click sequence
+							continue
+						}
+
+						// Normal single click release
+						clickEvent := MouseClickEvent{
+							Button:   buttonName,
+							Action:   "release",
+							X:        int(pt.X),
+							Y:        int(pt.Y),
+							IsDouble: false,
+						}
+
+						data, _ := json.Marshal(clickEvent)
+						eventCh <- InputEvent{
+							Type: "mouse_click",
+							Data: string(data),
+						}
+					}
+				}
+			}
+
+			time.Sleep(10 * time.Millisecond) // Polling interval
 		}
 	}
 }
