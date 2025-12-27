@@ -4,6 +4,7 @@ import (
 	"copy/pkg/ipscan"
 	"log"
 	"runtime"
+	"sync"
 )
 
 func scanAndFilterDevices() []ipscan.Device {
@@ -29,6 +30,7 @@ func scanAndFilterDevices() []ipscan.Device {
 
 	log.Printf("[scan] Found %d devices, filtering...", len(devices))
 	devices = ipscan.FilterDevices(devices)
+	log.Printf("[scan] Filtered %d devices, detecting types...", len(devices))
 	devices = ipscan.DetectDevicesType(devices)
 
 	return devices
@@ -41,17 +43,25 @@ func findReachableIPs(port string) []string {
 	devices := scanAndFilterDevices()
 	var reachableIPs []string
 
+	log.Printf("[scan] Found %d devices, checking reachability...", len(devices))
+
+	wg := sync.WaitGroup{}
 	for _, device := range devices {
 		if device.IP == localIP {
 			continue
 		}
-
-		if isReachable(device.IP, port) {
-			reachableIPs = append(reachableIPs, device.IP)
-			log.Printf("[scan] Found reachable peer: %s (%s)", device.IP, device.Hostname)
-		}
+		wg.Add(1)
+		go func(device ipscan.Device) {
+			defer wg.Done()
+			if isReachable(device.IP, port) {
+				reachableIPs = append(reachableIPs, device.IP)
+				log.Printf("[scan] Found reachable peer: %s (%s)", device.IP, device.Hostname)
+			}
+		}(device)
 	}
+
+	wg.Wait()
+	log.Printf("[scan] All reachability checks completed")
 
 	return reachableIPs
 }
-

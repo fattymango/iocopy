@@ -1,21 +1,37 @@
 package ipscan
 
-import "strings"
+import (
+	"log"
+	"strings"
+	"sync"
+)
 
 // DetectDevicesType detects the type of each device using the OUI vendor list and hostname heuristics
 func DetectDevicesType(d []Device) []Device {
 	ouiDB, err := loadOUITable()
 	if err != nil {
-		// Could not load OUI table, fallback to hostname only
-		for i := range d {
-			detectDeviceType(&d[i], nil)
-		}
+		log.Printf("[DetectDevicesType] Error loading OUI table: %v", err)
 		return d
 	}
+	log.Printf("[DetectDevicesType] OUI table loaded successfully")
 
+	var wg sync.WaitGroup
+	log.Printf("[DetectDevicesType] Starting %d device type detection goroutines", len(d))
 	for i := range d {
-		detectDeviceType(&d[i], ouiDB)
+		wg.Add(1)
+
+		go func(i int) {
+			defer wg.Done()
+			if err != nil {
+				detectDeviceType(&d[i], nil)
+			} else {
+				detectDeviceType(&d[i], ouiDB)
+			}
+		}(i)
 	}
+
+	wg.Wait()
+	log.Printf("[DetectDevicesType] All device type detection goroutines completed")
 	return d
 }
 
