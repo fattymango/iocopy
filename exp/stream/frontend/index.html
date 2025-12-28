@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Stream</title>
+  <style>
+    body { margin: 0; background: black; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+
+<canvas id="screen"></canvas>
+
+<script>
+const canvas = document.getElementById("screen")
+const ctx = canvas.getContext("2d")
+
+canvas.width = window.innerWidth
+canvas.height = window.innerHeight
+
+async function renderLoop() {
+  try {
+    const frame = await window.go.app.Stream.GetLatestFrame()
+    if (frame && frame.length > 0) {
+      const blob = new Blob([new Uint8Array(frame)], { type: "image/jpeg" })
+      const bitmap = await createImageBitmap(blob)
+
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    }
+  } catch (e) {
+    console.error(e)
+  }
+
+  requestAnimationFrame(renderLoop)
+}
+
+renderLoop()
+</script>
+
+</body>
+</html>

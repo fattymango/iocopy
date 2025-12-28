@@ -1,7 +1,7 @@
 package app
 
 import (
-	"copy/internal/input"
+	"copy/internal/control"
 	"copy/internal/wire"
 	"fmt"
 	"log"
@@ -24,7 +24,7 @@ func (a *App) RunControl(targetIP, port string) error {
 	log.Printf("[control] Press Ctrl+Shift+B to stop control")
 
 	// Create input controller
-	controller := input.NewController(client)
+	controller := control.NewController(client)
 
 	// Start controlling (this blocks until Ctrl+Shift+B or connection lost)
 	log.Printf("[control] Starting controller...")

@@ -1,7 +1,7 @@
 package app
 
 import (
-	"copy/internal/input"
+	"copy/internal/control"
 	"copy/internal/wire"
 	"fmt"
 	"log"
@@ -35,7 +35,7 @@ func handleServerConnection(s *wire.Server, conn net.Conn) {
 	log.Printf("[server] Remote peer is taking control of this device")
 
 	// Create input receiver to execute received input events
-	receiver, err := input.NewReceiver()
+	receiver, err := control.NewReceiver()
 	if err != nil {
 		log.Printf("[server] Failed to create input receiver: %v", err)
 		conn.Close()
