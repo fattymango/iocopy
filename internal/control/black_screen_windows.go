@@ -62,7 +62,7 @@ func (b *BlackScreenWindow) SetFrame(frameData string) {
 	b.mu.Lock()
 	app := b.app
 	b.mu.Unlock()
-	
+
 	if app != nil {
 		app.SetFrame(frameData)
 	}
@@ -167,10 +167,10 @@ func (b *BlackScreenWindow) Show() error {
 				wailsruntime.WindowShow(ctx)
 				wailsruntime.WindowSetAlwaysOnTop(ctx, true)
 
-				// ✅ Native window controls preserved
-				wailsruntime.WindowMaximise(ctx)
+				// Enter fullscreen mode to take the entire window
+				wailsruntime.WindowFullscreen(ctx)
 
-				log.Printf("[blackscreen] Window started with native title bar")
+				log.Printf("[blackscreen] Window started in fullscreen mode")
 			},
 			OnShutdown: func(ctx context.Context) {
 				log.Printf("[blackscreen] Window shutdown")
