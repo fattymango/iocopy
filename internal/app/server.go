@@ -92,7 +92,7 @@ func handleServerConnection(s *wire.Server, conn net.Conn) {
 // startScreenCapture captures the screen and sends frames to the controlling peer
 func startScreenCapture(conn net.Conn, capture screencapture.ScreenCapture, stopCh chan struct{}, remoteIP string) {
 	log.Printf("[screen] Starting screen capture for %s", remoteIP)
-	ticker := time.NewTicker(50 * time.Millisecond) // ~20 FPS
+	ticker := time.NewTicker(time.Second / 60) // 60 FPS
 	defer ticker.Stop()
 
 	for {

@@ -98,7 +98,7 @@ func (c *Controller) Start() error {
 	log.Printf("[input] Control session established")
 
 	// Start receiving screen frames in background
-	frameCh := make(chan string, 10) // Changed to string for base64 data
+	frameCh := make(chan string, 60) // Buffer for 60 FPS (1 second of frames)
 	go c.receiveScreenFrames(frameCh)
 
 	// Check for hotkey from black screen window (Windows only)

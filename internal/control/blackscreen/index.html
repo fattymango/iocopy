@@ -32,11 +32,61 @@
 		// Get reference to the image element
 		const screenImage = document.getElementById('screenImage');
 
-		// Listen for frame events from Go
-		window.runtime.EventsOn('frame', function(frameData) {
-			if (frameData) {
-				// Update image source with base64 data
-				screenImage.src = 'data:image/jpeg;base64,' + frameData;
+		// Connect to WebSocket server for frame streaming
+		const wsPort = 8765;
+		let ws = null;
+		let reconnectAttempts = 0;
+		const maxReconnectAttempts = 10;
+
+		function connectWebSocket() {
+			try {
+				ws = new WebSocket('ws://127.0.0.1:' + wsPort + '/frames');
+				
+				ws.onopen = function() {
+					console.log('[blackscreen] WebSocket connected');
+					reconnectAttempts = 0;
+				};
+
+				ws.onmessage = function(event) {
+					if (event.data) {
+						// Update image source with base64 data
+						screenImage.src = 'data:image/jpeg;base64,' + event.data;
+					}
+				};
+
+				ws.onerror = function(error) {
+					console.error('[blackscreen] WebSocket error:', error);
+				};
+
+				ws.onclose = function() {
+					console.log('[blackscreen] WebSocket closed, attempting to reconnect...');
+					ws = null;
+					
+					// Attempt to reconnect
+					if (reconnectAttempts < maxReconnectAttempts) {
+						reconnectAttempts++;
+						setTimeout(connectWebSocket, 1000 * reconnectAttempts); // Exponential backoff
+					} else {
+						console.error('[blackscreen] Max reconnection attempts reached');
+					}
+				};
+			} catch (error) {
+				console.error('[blackscreen] Failed to create WebSocket:', error);
+				// Retry after a delay
+				if (reconnectAttempts < maxReconnectAttempts) {
+					reconnectAttempts++;
+					setTimeout(connectWebSocket, 1000 * reconnectAttempts);
+				}
+			}
+		}
+
+		// Start WebSocket connection
+		connectWebSocket();
+
+		// Cleanup on page unload
+		window.addEventListener('beforeunload', function() {
+			if (ws) {
+				ws.close();
 			}
 		});
 

@@ -8,14 +8,21 @@ import (
 	"embed"
 	"io/fs"
 	"log"
+	"net/http"
 	gosync "runtime"
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+const (
+	// WebSocket server port for frame streaming
+	websocketPort = "8765"
 )
 
 //go:embed all:blackscreen
@@ -25,6 +32,8 @@ var blackScreenAssets embed.FS
 type BlackScreenApp struct {
 	ctx      context.Context
 	hotkeyCh chan struct{}
+	wsConn   *websocket.Conn
+	wsMu     sync.Mutex
 }
 
 // OnHotkey is called from JavaScript when Ctrl+Shift+B is pressed
@@ -38,23 +47,34 @@ func (a *BlackScreenApp) OnHotkey() {
 
 // SetFrame is called from Go to update the displayed frame
 func (a *BlackScreenApp) SetFrame(frameData string) {
-	if a.ctx == nil {
-		return
+	a.wsMu.Lock()
+	conn := a.wsConn
+	a.wsMu.Unlock()
+
+	if conn != nil {
+		// Send frame data over WebSocket
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(frameData)); err != nil {
+			log.Printf("[blackscreen] Failed to send frame over WebSocket: %v", err)
+			// Clear connection on error
+			a.wsMu.Lock()
+			a.wsConn = nil
+			a.wsMu.Unlock()
+		}
 	}
-	// Emit event to JavaScript with base64 frame data
-	wailsruntime.EventsEmit(a.ctx, "frame", frameData)
 }
 
 // BlackScreenWindow manages a fullscreen black window using Wails
 type BlackScreenWindow struct {
-	app      *BlackScreenApp
-	wg       sync.WaitGroup
-	stopCh   chan struct{}
-	hotkeyCh chan struct{} // Channel to signal hotkey detected
-	running  bool
-	mu       sync.Mutex
-	ctx      context.Context
-	cancel   context.CancelFunc
+	app        *BlackScreenApp
+	wg         sync.WaitGroup
+	stopCh     chan struct{}
+	hotkeyCh   chan struct{} // Channel to signal hotkey detected
+	running    bool
+	mu         sync.Mutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wsServer   *http.Server
+	wsUpgrader websocket.Upgrader
 }
 
 // SetFrame sets the frame data to display in the black screen window
@@ -73,6 +93,12 @@ func NewBlackScreenWindow() (*BlackScreenWindow, error) {
 	return &BlackScreenWindow{
 		stopCh:   make(chan struct{}),
 		hotkeyCh: make(chan struct{}, 1),
+		wsUpgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				// Allow connections from localhost only
+				return true
+			},
+		},
 	}, nil
 }
 
@@ -109,6 +135,9 @@ func (b *BlackScreenWindow) Show() error {
 	b.mu.Lock()
 	b.app = app
 	b.mu.Unlock()
+
+	// Start WebSocket server for frame streaming
+	b.startWebSocketServer()
 
 	// Run Wails app in a goroutine
 	b.wg.Add(1)
@@ -202,6 +231,16 @@ func (b *BlackScreenWindow) Hide() error {
 	}
 	app := b.app
 	b.running = false
+
+	// Close WebSocket connection if open
+	if app.wsConn != nil {
+		app.wsMu.Lock()
+		if app.wsConn != nil {
+			app.wsConn.Close()
+			app.wsConn = nil
+		}
+		app.wsMu.Unlock()
+	}
 	b.mu.Unlock()
 
 	log.Printf("[blackscreen] Destroying black screen window...")
@@ -225,5 +264,67 @@ func (b *BlackScreenWindow) Hide() error {
 func (b *BlackScreenWindow) Close() error {
 	b.Hide()
 	b.wg.Wait()
+
+	// Stop WebSocket server
+	if b.wsServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		b.wsServer.Shutdown(ctx)
+	}
+
 	return nil
+}
+
+// startWebSocketServer starts a WebSocket server on a fixed port for frame streaming
+func (b *BlackScreenWindow) startWebSocketServer() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/frames", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := b.wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("[blackscreen] WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		log.Printf("[blackscreen] WebSocket client connected")
+
+		// Store connection in app
+		b.mu.Lock()
+		if b.app != nil {
+			b.app.wsMu.Lock()
+			b.app.wsConn = conn
+			b.app.wsMu.Unlock()
+		}
+		b.mu.Unlock()
+
+		// Keep connection alive and handle close
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				log.Printf("[blackscreen] WebSocket connection closed: %v", err)
+				// Clear connection
+				b.mu.Lock()
+				if b.app != nil {
+					b.app.wsMu.Lock()
+					b.app.wsConn = nil
+					b.app.wsMu.Unlock()
+				}
+				b.mu.Unlock()
+				break
+			}
+		}
+	})
+
+	b.wsServer = &http.Server{
+		Addr:    "127.0.0.1:" + websocketPort,
+		Handler: mux,
+	}
+
+	go func() {
+		log.Printf("[blackscreen] Starting WebSocket server on port %s", websocketPort)
+		if err := b.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[blackscreen] WebSocket server error: %v", err)
+		}
+	}()
 }
