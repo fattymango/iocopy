@@ -2,7 +2,7 @@ package model
 
 // InputEvent represents a keyboard or mouse input event
 type InputEvent struct {
-	Type string `json:"type"` // "keyboard", "mouse_move", "mouse_click", "mouse_scroll"
+	Type string `json:"type"` // "keyboard", "mouse_move", "mouse_click", "mouse_scroll", "screen_capture"
 	Data string `json:"data"` // JSON-encoded event data
 }
 
@@ -32,4 +32,9 @@ type MouseClickEvent struct {
 type MouseScrollEvent struct {
 	DeltaX int `json:"delta_x"`
 	DeltaY int `json:"delta_y"`
+}
+
+// ScreenCaptureEvent represents a screen capture event
+type ScreenCaptureEvent struct {
+	Data []byte `json:"data"`
 }

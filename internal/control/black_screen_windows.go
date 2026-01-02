@@ -21,7 +21,7 @@ import (
 //go:embed all:blackscreen
 var blackScreenAssets embed.FS
 
-// BlackScreenApp is the Wails app struct for handling hotkey
+// BlackScreenApp is the Wails app struct for handling hotkey and displaying frames
 type BlackScreenApp struct {
 	ctx      context.Context
 	hotkeyCh chan struct{}
@@ -36,6 +36,15 @@ func (a *BlackScreenApp) OnHotkey() {
 	}
 }
 
+// SetFrame is called from Go to update the displayed frame
+func (a *BlackScreenApp) SetFrame(frameData string) {
+	if a.ctx == nil {
+		return
+	}
+	// Emit event to JavaScript with base64 frame data
+	wailsruntime.EventsEmit(a.ctx, "frame", frameData)
+}
+
 // BlackScreenWindow manages a fullscreen black window using Wails
 type BlackScreenWindow struct {
 	app      *BlackScreenApp
@@ -46,6 +55,17 @@ type BlackScreenWindow struct {
 	mu       sync.Mutex
 	ctx      context.Context
 	cancel   context.CancelFunc
+}
+
+// SetFrame sets the frame data to display in the black screen window
+func (b *BlackScreenWindow) SetFrame(frameData string) {
+	b.mu.Lock()
+	app := b.app
+	b.mu.Unlock()
+	
+	if app != nil {
+		app.SetFrame(frameData)
+	}
 }
 
 // NewBlackScreenWindow creates a new black screen window manager

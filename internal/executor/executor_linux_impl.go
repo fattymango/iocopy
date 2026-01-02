@@ -3,6 +3,7 @@ package executor
 import (
 	"copy/internal/model"
 	"fmt"
+	"log"
 	"os/exec"
 )
 
@@ -75,6 +76,11 @@ func (l *LinuxInputExecutor) ExecuteMouseScroll(event model.MouseScrollEvent) er
 		cmd := exec.Command("xdotool", "click", "5")
 		return cmd.Run()
 	}
+	return nil
+}
+
+func (l *LinuxInputExecutor) ExecuteScreenCapture(data []byte) error {
+	log.Printf("[input] Executing screen capture: %d bytes", len(data))
 	return nil
 }
 

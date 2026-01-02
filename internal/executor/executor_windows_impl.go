@@ -319,6 +319,15 @@ func (w *WindowsInputExecutor) ExecuteMouseScroll(event model.MouseScrollEvent) 
 	return nil
 }
 
+func (w *WindowsInputExecutor) ExecuteScreenCapture(data []byte) error {
+	log.Printf("[input] Executing screen capture: %d bytes", len(data))
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+
+	return nil
+}
+
 func (w *WindowsInputExecutor) Close() error {
 	return nil
 }

@@ -97,13 +97,17 @@ func (c *Controller) Start() error {
 	}
 	log.Printf("[input] Control session established")
 
+	// Start receiving screen frames in background
+	frameCh := make(chan string, 10) // Changed to string for base64 data
+	go c.receiveScreenFrames(frameCh)
+
 	// Check for hotkey from black screen window (Windows only)
 	var hotkeyCh <-chan struct{}
 	if runtime.GOOS == "windows" && c.blackScreen != nil {
 		hotkeyCh = c.blackScreen.GetHotkeyChannel()
 	}
 
-	// Forward events to remote peer
+	// Forward events to remote peer and handle screen frames
 	for {
 		select {
 		case event, ok := <-eventCh:
@@ -152,6 +156,12 @@ func (c *Controller) Start() error {
 			}
 			log.Printf("[input] Sent input event: %s", event.Type)
 
+		case frameData := <-frameCh:
+			// Handle received screen frame - display in black screen window
+			if c.blackScreen != nil {
+				c.blackScreen.SetFrame(frameData)
+			}
+
 		case <-hotkeyCh:
 			// Hotkey detected from black screen window
 			log.Printf("[input] Stop hotkey detected (Ctrl+Shift+B) from black screen")
@@ -160,6 +170,43 @@ func (c *Controller) Start() error {
 		case <-c.stopCh:
 			log.Printf("[input] Controller stopped")
 			return nil
+		}
+	}
+}
+
+// receiveScreenFrames receives screen frames from the controlled device
+func (c *Controller) receiveScreenFrames(frameCh chan<- string) {
+	log.Printf("[screen] Starting to receive screen frames")
+	defer close(frameCh)
+
+	for {
+		select {
+		case <-c.stopCh:
+			log.Printf("[screen] Stopping screen frame receiver")
+			return
+		default:
+			// Read message from client (blocking)
+			msg, err := c.client.Read()
+			if err != nil {
+				log.Printf("[screen] Failed to read message: %v", err)
+				return
+			}
+
+			// Handle screen frame messages
+			if msg.Type == "screen_frame" {
+				// Frame data is already base64 encoded, send directly
+				select {
+				case frameCh <- msg.Data:
+					// Frame sent successfully
+				default:
+					// Channel full, skip this frame (non-blocking)
+					// This prevents blocking the receiver if display is slow
+				}
+			} else if msg.Type == "control_ack" {
+				log.Printf("[screen] Control acknowledged by remote peer")
+			} else {
+				log.Printf("[screen] Received unexpected message type: %s", msg.Type)
+			}
 		}
 	}
 }

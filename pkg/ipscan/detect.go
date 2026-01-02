@@ -10,10 +10,11 @@ import (
 func DetectDevicesType(d []Device) []Device {
 	ouiDB, err := loadOUITable()
 	if err != nil {
-		log.Printf("[DetectDevicesType] Error loading OUI table: %v", err)
-		return d
+		log.Printf("[DetectDevicesType] Warning: OUI table unavailable (%v), using hostname heuristics only", err)
+		// Continue without OUI lookup - will use hostname heuristics instead
+	} else {
+		log.Printf("[DetectDevicesType] OUI table loaded successfully")
 	}
-	log.Printf("[DetectDevicesType] OUI table loaded successfully")
 
 	var wg sync.WaitGroup
 	log.Printf("[DetectDevicesType] Starting %d device type detection goroutines", len(d))

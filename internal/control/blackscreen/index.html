@@ -13,11 +13,33 @@
 			height: 100%;
 			background-color: #000000;
 			overflow: hidden;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+		#screenImage {
+			max-width: 100%;
+			max-height: 100%;
+			object-fit: contain;
+			image-rendering: -webkit-optimize-contrast;
+			image-rendering: crisp-edges;
 		}
 	</style>
 </head>
 <body>
+	<img id="screenImage" src="" alt="Remote Screen" />
 	<script>
+		// Get reference to the image element
+		const screenImage = document.getElementById('screenImage');
+
+		// Listen for frame events from Go
+		window.runtime.EventsOn('frame', function(frameData) {
+			if (frameData) {
+				// Update image source with base64 data
+				screenImage.src = 'data:image/jpeg;base64,' + frameData;
+			}
+		});
+
 		// Listen for Ctrl+Shift+B hotkey
 		document.addEventListener('keydown', function(e) {
 			if (e.key === 'B' || e.key === 'b') {

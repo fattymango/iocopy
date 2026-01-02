@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-const ieeeOuiURL = "http://standards-oui.ieee.org/oui.txt"
+const ieeeOuiURL = "https://standards-oui.ieee.org/oui.txt"
 
 // Global OUI map (once loaded)
 var ouiOnce sync.Once
@@ -17,7 +17,17 @@ var ouiOnce sync.Once
 func loadOUITable() (map[string]string, error) {
 	ouiMap := make(map[string]string)
 
-	resp, err := http.Get(ieeeOuiURL)
+	// Create HTTP client with proper User-Agent to avoid 418 errors
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", ieeeOuiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Set User-Agent to avoid being blocked
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+	
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -2,10 +2,13 @@ package app
 
 import (
 	"copy/internal/control"
+	"copy/internal/screencapture"
 	"copy/internal/wire"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
+	"time"
 )
 
 func (a *App) startServer() error {
@@ -43,8 +46,13 @@ func handleServerConnection(s *wire.Server, conn net.Conn) {
 	}
 	defer receiver.Close()
 
+	// Screen capture for sending frames back
+	screenCapture := screencapture.NewScreenCapture()
+	screenCaptureStopCh := make(chan struct{})
+
 	// Handle connection immediately (already in a goroutine from server.Start)
 	defer func() {
+		close(screenCaptureStopCh)
 		conn.Close()
 		log.Printf("[server] Connection closed with %s - control session ended", remoteIP)
 	}()
@@ -68,6 +76,8 @@ func handleServerConnection(s *wire.Server, conn net.Conn) {
 			if err := wire.Send(conn, ack); err != nil {
 				log.Printf("[server] Failed to send control ack: %v", err)
 			}
+			// Start screen capture and sending frames
+			go startScreenCapture(conn, screenCapture, screenCaptureStopCh, remoteIP)
 		case "input_event":
 			if err := receiver.HandleMessage(&msg); err != nil {
 				log.Printf("[server] Failed to handle input event: %v", err)
@@ -75,6 +85,41 @@ func handleServerConnection(s *wire.Server, conn net.Conn) {
 			}
 		default:
 			log.Printf("[server] Received unknown message type from %s: %s", remoteIP, msg.Type)
+		}
+	}
+}
+
+// startScreenCapture captures the screen and sends frames to the controlling peer
+func startScreenCapture(conn net.Conn, capture screencapture.ScreenCapture, stopCh chan struct{}, remoteIP string) {
+	log.Printf("[screen] Starting screen capture for %s", remoteIP)
+	ticker := time.NewTicker(50 * time.Millisecond) // ~20 FPS
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			log.Printf("[screen] Screen capture stopped for %s", remoteIP)
+			return
+		case <-ticker.C:
+			// Capture screen
+			frameData, err := capture.Capture()
+			if err != nil {
+				log.Printf("[screen] Failed to capture screen: %v", err)
+				continue
+			}
+
+			// Encode frame as base64 for JSON transmission
+			encodedFrame := base64.StdEncoding.EncodeToString(frameData)
+
+			// Send frame to controlling peer
+			frameMsg := &wire.Message{
+				Type: "screen_frame",
+				Data: encodedFrame,
+			}
+			if err := wire.Send(conn, frameMsg); err != nil {
+				log.Printf("[screen] Failed to send screen frame: %v", err)
+				return
+			}
 		}
 	}
 }
