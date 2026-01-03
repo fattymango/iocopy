@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<style>
+		* {
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+		}
+		body, html {
+			width: 100%;
+			height: 100%;
+			background-color: #000000;
+			overflow: auto;
+			display: flex;
+			align-items: flex-start;
+			justify-content: flex-start;
+			/* Force GPU acceleration on body */
+			transform: translateZ(0);
+			-webkit-transform: translateZ(0);
+		}
+		#screenCanvas {
+			display: block;
+			min-width: 100%;
+			min-height: 100%;
+			image-rendering: -webkit-optimize-contrast;
+			image-rendering: crisp-edges;
+			/* Force GPU acceleration */
+			will-change: contents;
+			transform: translateZ(0);
+			-webkit-transform: translateZ(0);
+			backface-visibility: hidden;
+			-webkit-backface-visibility: hidden;
+			perspective: 1000px;
+			-webkit-perspective: 1000px;
+		}
+	</style>
+</head>
+<body>
+	<canvas id="screenCanvas"></canvas>
+	<script>
+		// Get reference to canvas element
+		const canvas = document.getElementById('screenCanvas');
+		
+		// Use WebGL for hardware-accelerated rendering (forces GPU usage)
+		const gl = canvas.getContext('webgl', {
+			alpha: false,
+			antialias: false,
+			preserveDrawingBuffer: false,
+			powerPreference: 'high-performance',
+			desynchronized: true
+		}) || canvas.getContext('experimental-webgl', {
+			alpha: false,
+			antialias: false,
+			preserveDrawingBuffer: false,
+			powerPreference: 'high-performance'
+		});
+		
+		if (!gl) {
+			console.error('[blackscreen] WebGL not supported, falling back to 2D');
+			var ctx = canvas.getContext('2d', { 
+				alpha: false,
+				desynchronized: true,
+				willReadFrequently: false
+			});
+		}
+		
+		// WebGL setup for texture rendering
+		let texture = null;
+		let program = null;
+		let useWebGL = !!gl;
+		
+		if (useWebGL) {
+			// Create shader program for rendering textures
+			const vertexShaderSource = `
+				attribute vec2 a_position;
+				attribute vec2 a_texCoord;
+				varying vec2 v_texCoord;
+				void main() {
+					gl_Position = vec4(a_position, 0.0, 1.0);
+					v_texCoord = a_texCoord;
+				}
+			`;
+			
+			const fragmentShaderSource = `
+				precision mediump float;
+				uniform sampler2D u_texture;
+				varying vec2 v_texCoord;
+				void main() {
+					gl_FragColor = texture2D(u_texture, v_texCoord);
+				}
+			`;
+			
+			function createShader(gl, type, source) {
+				const shader = gl.createShader(type);
+				gl.shaderSource(shader, source);
+				gl.compileShader(shader);
+				if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+					console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+					gl.deleteShader(shader);
+					return null;
+				}
+				return shader;
+			}
+			
+			function createProgram(gl, vertexShader, fragmentShader) {
+				const program = gl.createProgram();
+				gl.attachShader(program, vertexShader);
+				gl.attachShader(program, fragmentShader);
+				gl.linkProgram(program);
+				if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+					console.error('Program link error:', gl.getProgramInfoLog(program));
+					gl.deleteProgram(program);
+					return null;
+				}
+				return program;
+			}
+			
+			const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+			const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+			program = createProgram(gl, vertexShader, fragmentShader);
+			
+			if (program) {
+				// Create buffer for full-screen quad
+				const positionBuffer = gl.createBuffer();
+				gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+				gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+					-1, -1,  1, -1,  -1, 1,
+					-1, 1,   1, -1,   1, 1
+				]), gl.STATIC_DRAW);
+				
+				const texCoordBuffer = gl.createBuffer();
+				gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+				gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+					0, 1,  1, 1,  0, 0,
+					0, 0,  1, 1,  1, 0
+				]), gl.STATIC_DRAW);
+				
+				// Store buffers and attribute locations
+				gl.positionBuffer = positionBuffer;
+				gl.texCoordBuffer = texCoordBuffer;
+				gl.positionLocation = gl.getAttribLocation(program, 'a_position');
+				gl.texCoordLocation = gl.getAttribLocation(program, 'a_texCoord');
+				gl.textureLocation = gl.getUniformLocation(program, 'u_texture');
+				
+				// Create texture
+				texture = gl.createTexture();
+				gl.bindTexture(gl.TEXTURE_2D, texture);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+				
+				console.log('[blackscreen] WebGL initialized for GPU acceleration');
+			} else {
+				useWebGL = false;
+			}
+		}
+		
+		// Set canvas size based on image dimensions
+		function resizeCanvasToImage(imageWidth, imageHeight) {
+			canvas.width = imageWidth;
+			canvas.height = imageHeight;
+			if (useWebGL && gl) {
+				gl.viewport(0, 0, canvas.width, canvas.height);
+			}
+		}
+
+		// Connect to WebSocket server for frame streaming
+		const wsPort = 8765;
+		let ws = null;
+		let reconnectAttempts = 0;
+		const maxReconnectAttempts = 10;
+
+		// Frame queue for smooth rendering with requestAnimationFrame
+		let latestFrameBlob = null;
+		let latestImageBitmap = null;
+		let renderLoopActive = false;
+
+		// Performance tracking (for internal use, not displayed)
+		let droppedFrames = 0;
+		let lastFrameTime = performance.now();
+
+		// Render frames using requestAnimationFrame and ImageBitmap for hardware acceleration
+		async function renderFrame() {
+			if (latestImageBitmap) {
+				// Resize canvas to match image dimensions for 1:1 pixel ratio
+				if (canvas.width !== latestImageBitmap.width || canvas.height !== latestImageBitmap.height) {
+					resizeCanvasToImage(latestImageBitmap.width, latestImageBitmap.height);
+				}
+				
+				if (useWebGL && gl && program) {
+					// Use WebGL for GPU-accelerated rendering
+					gl.useProgram(program);
+					
+					// Clear canvas with black
+					gl.clearColor(0.0, 0.0, 0.0, 1.0);
+					gl.clear(gl.COLOR_BUFFER_BIT);
+					
+					// Upload texture
+					gl.bindTexture(gl.TEXTURE_2D, texture);
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, latestImageBitmap);
+					
+					// Set up attributes
+					gl.bindBuffer(gl.ARRAY_BUFFER, gl.positionBuffer);
+					gl.enableVertexAttribArray(gl.positionLocation);
+					gl.vertexAttribPointer(gl.positionLocation, 2, gl.FLOAT, false, 0, 0);
+					
+					gl.bindBuffer(gl.ARRAY_BUFFER, gl.texCoordBuffer);
+					gl.enableVertexAttribArray(gl.texCoordLocation);
+					gl.vertexAttribPointer(gl.texCoordLocation, 2, gl.FLOAT, false, 0, 0);
+					
+					// Set texture uniform
+					gl.activeTexture(gl.TEXTURE0);
+					gl.bindTexture(gl.TEXTURE_2D, texture);
+					gl.uniform1i(gl.textureLocation, 0);
+					
+					// Draw
+					gl.drawArrays(gl.TRIANGLES, 0, 6);
+					
+					// Clean up old ImageBitmap
+					if (latestImageBitmap) {
+						latestImageBitmap.close();
+						latestImageBitmap = null;
+					}
+				} else if (ctx) {
+					// Fallback to 2D canvas - draw at full size (1:1 pixel ratio)
+					ctx.fillStyle = '#000000';
+					ctx.fillRect(0, 0, canvas.width, canvas.height);
+					
+					ctx.imageSmoothingEnabled = true;
+					ctx.imageSmoothingQuality = 'high';
+					ctx.drawImage(latestImageBitmap, 0, 0);
+					
+					// Clean up old ImageBitmap
+					if (latestImageBitmap) {
+						latestImageBitmap.close();
+						latestImageBitmap = null;
+					}
+				}
+			}
+			
+			// Process next frame if available
+			if (latestFrameBlob) {
+				try {
+					// Create ImageBitmap from blob (hardware-accelerated decoding)
+					const imageBitmap = await createImageBitmap(latestFrameBlob);
+					latestImageBitmap = imageBitmap;
+					latestFrameBlob = null; // Clear blob after creating ImageBitmap
+				} catch (err) {
+					console.error('[blackscreen] Failed to create ImageBitmap:', err);
+					latestFrameBlob = null;
+				}
+			}
+			
+			// Check for dropped frames (if time since last frame is too long)
+			const frameStartTime = performance.now();
+			const timeSinceLastFrame = frameStartTime - lastFrameTime;
+			if (timeSinceLastFrame > 25) { // More than 25ms (should be ~16.67ms for 60 FPS)
+				droppedFrames++;
+			}
+			lastFrameTime = frameStartTime;
+			
+			// Continue render loop while WebSocket is connected
+			if (ws && ws.readyState === WebSocket.OPEN) {
+				requestAnimationFrame(renderFrame);
+			} else {
+				renderLoopActive = false;
+			}
+		}
+
+		function queueFrame(frameBlob) {
+			// Store latest frame blob (drop older ones if not processed yet)
+			if (latestFrameBlob) {
+				// Frame was dropped (replaced before being processed)
+				droppedFrames++;
+				// Clean up old blob
+				latestFrameBlob = null;
+			}
+			latestFrameBlob = frameBlob;
+			
+			// Start render loop if not already running
+			if (!renderLoopActive && ws && ws.readyState === WebSocket.OPEN) {
+				renderLoopActive = true;
+				requestAnimationFrame(renderFrame);
+			}
+		}
+
+		function connectWebSocket() {
+			try {
+				ws = new WebSocket('ws://127.0.0.1:' + wsPort + '/frames');
+				
+				// Configure WebSocket to receive binary messages as Blob (most efficient)
+				ws.binaryType = 'blob';
+				
+				ws.onopen = function() {
+					console.log('[blackscreen] WebSocket connected');
+					reconnectAttempts = 0;
+					// Start render loop when connected
+					if (!renderLoopActive) {
+						renderLoopActive = true;
+						requestAnimationFrame(renderFrame);
+					}
+				};
+
+				ws.onmessage = function(event) {
+					if (event.data instanceof Blob) {
+						// Binary message received - create blob for ImageBitmap
+						queueFrame(event.data);
+					} else if (event.data instanceof ArrayBuffer) {
+						// ArrayBuffer received - convert to blob
+						queueFrame(new Blob([event.data], { type: 'image/jpeg' }));
+					} else {
+						// Fallback for text (shouldn't happen with binary messages)
+						console.warn('[blackscreen] Received non-binary message');
+					}
+				};
+
+				ws.onerror = function(error) {
+					console.error('[blackscreen] WebSocket error:', error);
+				};
+
+				ws.onclose = function() {
+					console.log('[blackscreen] WebSocket closed, attempting to reconnect...');
+					ws = null;
+					
+					// Attempt to reconnect
+					if (reconnectAttempts < maxReconnectAttempts) {
+						reconnectAttempts++;
+						setTimeout(connectWebSocket, 1000 * reconnectAttempts); // Exponential backoff
+					} else {
+						console.error('[blackscreen] Max reconnection attempts reached');
+					}
+				};
+			} catch (error) {
+				console.error('[blackscreen] Failed to create WebSocket:', error);
+				// Retry after a delay
+				if (reconnectAttempts < maxReconnectAttempts) {
+					reconnectAttempts++;
+					setTimeout(connectWebSocket, 1000 * reconnectAttempts);
+				}
+			}
+		}
+
+		// Start WebSocket connection
+		connectWebSocket();
+
+		// Make sure document can receive keyboard events
+		document.body.setAttribute('tabindex', '-1');
+		document.body.focus();
+		
+		// Test: log all keydown events to see if they're being captured
+		document.addEventListener('keydown', function(e) {
+			console.log('[blackscreen] Keydown event captured:', e.key, 'ctrl:', e.ctrlKey, 'shift:', e.shiftKey);
+		}, true);
+
+		// Cleanup on page unload
+		window.addEventListener('beforeunload', function() {
+			if (ws) {
+				ws.close();
+			}
+		});
+
+		// Listen for Ctrl+Shift+B hotkey
+		document.addEventListener('keydown', function(e) {
+			if (e.key === 'B' || e.key === 'b') {
+				if (e.ctrlKey && e.shiftKey) {
+					e.preventDefault();
+					e.stopPropagation();
+					console.log('[blackscreen] Hotkey detected in iframe: Ctrl+Shift+B');
+					// Always use postMessage since iframe doesn't have access to window.go
+					// The parent window has access to window.go and will call the Go method
+					try {
+						window.parent.postMessage({ type: 'hotkey' }, '*');
+						console.log('[blackscreen] Hotkey sent to parent via postMessage');
+					} catch (err) {
+						console.error('[blackscreen] Failed to send hotkey to parent:', err);
+					}
+				}
+			}
+		}, true); // Use capture phase to catch early
+
+		// Listen for mouse wheel events
+		document.addEventListener('wheel', function(e) {
+			e.preventDefault();
+			e.stopPropagation();
+			// Get wheel delta values
+			// deltaY: positive = scroll down, negative = scroll up
+			// deltaX: positive = scroll right, negative = scroll left
+			// Browser typically gives ~100 pixels per wheel "click"
+			// We normalize to integers: divide by 100 and round
+			// This gives us roughly 1 per click, which the executor multiplies by 120 (WHEEL_DELTA)
+			const deltaX = Math.round(e.deltaX / 100);
+			const deltaY = Math.round(e.deltaY / 100);
+			
+			// Only send if there's actual movement
+			if (deltaX !== 0 || deltaY !== 0) {
+				console.log('[blackscreen] Wheel event in iframe:', deltaX, deltaY);
+				// Always use postMessage since iframe doesn't have access to window.go
+				// The parent window has access to window.go and will call the Go method
+				try {
+					window.parent.postMessage({ type: 'wheel', deltaX: deltaX, deltaY: deltaY }, '*');
+					console.log('[blackscreen] Wheel sent to parent via postMessage');
+				} catch (err) {
+					console.error('[blackscreen] Failed to send wheel to parent:', err);
+				}
+			}
+		}, { passive: false, capture: true }); // passive: false allows preventDefault, capture: true to catch early
+
+		// Prevent context menu
+		document.addEventListener('contextmenu', function(e) {
+			e.preventDefault();
+		});
+
+		// Prevent default behaviors
+		document.addEventListener('selectstart', function(e) {
+			e.preventDefault();
+		});
+	</script>
+</body>
+</html>
+

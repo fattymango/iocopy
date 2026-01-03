@@ -2,14 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Peer Scanner</title>
+  <title>IOCopy</title>
 
   <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
       background: #0f172a;
       color: #e5e7eb;
+      height: 100vh;
+      overflow: hidden;
+      outline: none;
+    }
+
+    body:focus {
+      outline: none;
+    }
+
+    #scannerView {
       display: flex;
       align-items: center;
       justify-content: center;
@@ -22,6 +38,32 @@
       border-radius: 10px;
       padding: 20px;
       box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+
+    #blackscreenView {
+      display: none;
+      width: 100%;
+      height: 100vh;
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1000;
+    }
+
+    #blackscreenView.active {
+      display: block;
+    }
+
+    #blackscreenFrame {
+      width: 100%;
+      height: 100%;
+      border: none;
+      outline: none;
+      pointer-events: auto;
+    }
+
+    #blackscreenView.active #blackscreenFrame {
+      display: block;
     }
 
     h1 {
@@ -101,21 +143,27 @@
 </head>
 
 <body>
-  <div id="app">
-    <h1>Finding peers...</h1>
+  <div id="scannerView">
+    <div id="app">
+      <h1>Finding peers...</h1>
 
-    <div id="spinner">
-      <div class="loader"></div>
-      <div>Scanning network</div>
+      <div id="spinner">
+        <div class="loader"></div>
+        <div>Scanning network</div>
+      </div>
+
+      <ul id="ipList"></ul>
+
+      <button id="rescanBtn" class="secondary" style="display:none;">
+        Scan again
+      </button>
+
+      <div id="status"></div>
     </div>
+  </div>
 
-    <ul id="ipList"></ul>
-
-    <button id="rescanBtn" class="secondary" style="display:none;">
-      Scan again
-    </button>
-
-    <div id="status"></div>
+  <div id="blackscreenView">
+    <iframe id="blackscreenFrame" src="blackscreen/index.html"></iframe>
   </div>
 
   <script>
@@ -160,17 +208,194 @@
       }
     }
 
+    function showBlackScreen() {
+      document.getElementById("scannerView").style.display = "none"
+      document.getElementById("blackscreenView").classList.add("active")
+      
+      // Listen for postMessage from iframe FIRST (before adding other listeners)
+      // This ensures we can handle events from the iframe
+      window.addEventListener("message", handleIframeMessage, false)
+      
+      // Add event listeners to parent window (capture phase to catch before iframe)
+      // Use capture phase to intercept events before they reach the iframe
+      // This allows us to catch events even when iframe is focused
+      document.addEventListener("keydown", handleHotkey, true)
+      document.addEventListener("wheel", handleWheel, { passive: false, capture: true })
+      
+      // Also add listeners to window for extra coverage
+      window.addEventListener("keydown", handleHotkey, true)
+      window.addEventListener("wheel", handleWheel, { passive: false, capture: true })
+      
+      // Make body focusable and focus it so we can receive keyboard events
+      // But don't prevent iframe from receiving events - we want both to work
+      if (!document.body.hasAttribute("tabindex")) {
+        document.body.setAttribute("tabindex", "-1")
+      }
+      
+      // Focus the iframe so it can receive keyboard events (for its own listeners)
+      const frame = document.getElementById("blackscreenFrame")
+      if (frame) {
+        // Wait for iframe to load, then focus it
+        frame.onload = function() {
+          try {
+            // Focus iframe so it can capture events
+            frame.contentWindow.focus()
+            console.log("[scanner] Iframe focused")
+          } catch (e) {
+            // Cross-origin restriction, that's ok - parent window listener will handle it
+            console.log("[scanner] Cannot focus iframe (cross-origin), using parent handlers")
+            // If we can't focus iframe, focus body instead
+            document.body.focus()
+          }
+        }
+        // Try to focus immediately
+        try {
+          frame.focus()
+        } catch (e) {
+          // May fail due to cross-origin, that's ok - focus body instead
+          document.body.focus()
+        }
+      } else {
+        // No iframe, focus body
+        document.body.focus()
+      }
+      
+      try {
+        window.go.ui.UI.ShowBlackScreen()
+      } catch (err) {
+        console.error("Failed to show blackscreen:", err)
+      }
+    }
+
+    function handleIframeMessage(event) {
+      // Handle messages from iframe
+      if (event.data && event.data.type === 'hotkey') {
+        console.log("[scanner] Received hotkey message from iframe")
+        // Directly call the Go method instead of simulating an event
+        try {
+          if (typeof window.go !== 'undefined' && window.go.ui && window.go.ui.UI && typeof window.go.ui.UI.OnHotkey === 'function') {
+            window.go.ui.UI.OnHotkey()
+            console.log("[scanner] OnHotkey() called successfully from iframe message")
+          } else {
+            console.error("[scanner] OnHotkey method not available when handling iframe message!")
+          }
+        } catch (err) {
+          console.error("[scanner] Failed to send hotkey from iframe message:", err)
+        }
+      } else if (event.data && event.data.type === 'wheel') {
+        console.log("[scanner] Received wheel message from iframe:", event.data.deltaX, event.data.deltaY)
+        // Directly call the Go method instead of simulating an event
+        try {
+          if (typeof window.go !== 'undefined' && window.go.ui && window.go.ui.UI && typeof window.go.ui.UI.OnMouseWheel === 'function') {
+            window.go.ui.UI.OnMouseWheel(event.data.deltaX, event.data.deltaY)
+            console.log("[scanner] OnMouseWheel() called successfully from iframe message")
+          } else {
+            console.error("[scanner] OnMouseWheel method not available when handling iframe message!")
+          }
+        } catch (err) {
+          console.error("[scanner] Failed to send wheel event from iframe message:", err)
+        }
+      }
+    }
+
+    function handleHotkey(e) {
+      // Log all keydown events for debugging
+      console.log("[scanner] Keydown event captured:", e.key, "ctrl:", e.ctrlKey, "shift:", e.shiftKey, "target:", e.target)
+      
+      // Only handle if Ctrl+Shift+B
+      if ((e.key === 'B' || e.key === 'b') && e.ctrlKey && e.shiftKey) {
+        e.preventDefault()
+        e.stopPropagation()
+        console.log("[scanner] Hotkey detected: Ctrl+Shift+B")
+        console.log("[scanner] window.go exists:", typeof window.go !== 'undefined')
+        console.log("[scanner] window.go.ui exists:", typeof window.go !== 'undefined' && typeof window.go.ui !== 'undefined')
+        console.log("[scanner] window.go.ui.UI exists:", typeof window.go !== 'undefined' && typeof window.go.ui !== 'undefined' && typeof window.go.ui.UI !== 'undefined')
+        console.log("[scanner] window.go.ui.UI.OnHotkey exists:", typeof window.go !== 'undefined' && typeof window.go.ui !== 'undefined' && typeof window.go.ui.UI !== 'undefined' && typeof window.go.ui.UI.OnHotkey === 'function')
+        try {
+          if (typeof window.go !== 'undefined' && window.go.ui && window.go.ui.UI && typeof window.go.ui.UI.OnHotkey === 'function') {
+            window.go.ui.UI.OnHotkey()
+            console.log("[scanner] OnHotkey() called successfully")
+          } else {
+            console.error("[scanner] OnHotkey method not available!")
+          }
+        } catch (err) {
+          console.error("[scanner] Failed to send hotkey:", err)
+        }
+        return false
+      }
+    }
+
+    function handleWheel(e) {
+      // Log all wheel events for debugging
+      console.log("[scanner] Wheel event captured:", e.deltaX, e.deltaY, "target:", e.target)
+      
+      // Prevent default scrolling
+      e.preventDefault()
+      e.stopPropagation()
+      
+      // Get wheel delta values
+      // deltaY: positive = scroll down, negative = scroll up
+      // deltaX: positive = scroll right, negative = scroll left
+      // Browser typically gives ~100 pixels per wheel "click"
+      // We normalize to integers: divide by 100 and round
+      const deltaX = Math.round(e.deltaX / 100)
+      const deltaY = Math.round(e.deltaY / 100)
+      
+      // Only send if there's actual movement
+      if (deltaX !== 0 || deltaY !== 0) {
+        console.log("[scanner] Wheel event detected:", deltaX, deltaY)
+        try {
+          if (typeof window.go !== 'undefined' && window.go.ui && window.go.ui.UI && typeof window.go.ui.UI.OnMouseWheel === 'function') {
+            window.go.ui.UI.OnMouseWheel(deltaX, deltaY)
+            console.log("[scanner] OnMouseWheel() called successfully")
+          } else {
+            console.error("[scanner] OnMouseWheel method not available!")
+          }
+        } catch (err) {
+          console.error("[scanner] Failed to send wheel event:", err)
+        }
+      }
+      return false
+    }
+
+    function hideBlackScreen() {
+      document.getElementById("scannerView").style.display = "flex"
+      document.getElementById("blackscreenView").classList.remove("active")
+      
+      // Remove event listeners from both document and window
+      document.removeEventListener("keydown", handleHotkey, true)
+      document.removeEventListener("wheel", handleWheel, { capture: true })
+      window.removeEventListener("keydown", handleHotkey, true)
+      window.removeEventListener("wheel", handleWheel, { capture: true })
+      window.removeEventListener("message", handleIframeMessage, false)
+      
+      // Remove focus attribute
+      document.body.removeAttribute("tabindex")
+      
+      try {
+        window.go.ui.UI.HideBlackScreen()
+      } catch (err) {
+        console.error("Failed to hide blackscreen:", err)
+      }
+    }
+
     async function connect(ip) {
       title.textContent = `Connected to ${ip}`
       ipList.innerHTML = ""
       spinner.style.display = "block"
       status.textContent = "Control session active..."
 
+      // Show blackscreen view
+      showBlackScreen()
+
       try {
         await window.go.ui.UI.Connect(ip)
       } catch (err) {
         console.error(err)
       }
+
+      // Hide blackscreen and return to scanner
+      hideBlackScreen()
 
       spinner.style.display = "none"
       status.textContent = "Session ended"

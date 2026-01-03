@@ -23,8 +23,12 @@ func (a *App) RunControl(targetIP, port string) error {
 	log.Printf("[control] Gaining control over remote device...")
 	log.Printf("[control] Press Ctrl+Shift+B to stop control")
 
-	// Create input controller
-	controller := control.NewController(client)
+	// Create input controller with UI blackscreen (if available)
+	var blackScreen control.BlackScreen
+	if a.ui != nil {
+		blackScreen = a.ui
+	}
+	controller := control.NewController(client, blackScreen)
 
 	// Start controlling (this blocks until Ctrl+Shift+B or connection lost)
 	log.Printf("[control] Starting controller...")

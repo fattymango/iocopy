@@ -16,14 +16,15 @@ import (
 type Controller struct {
 	client      *wire.Client
 	stopCh      chan struct{}
-	blackScreen *BlackScreenWindow
+	blackScreen BlackScreen
 }
 
 // NewController creates a new input controller
-func NewController(client *wire.Client) *Controller {
+func NewController(client *wire.Client, blackScreen BlackScreen) *Controller {
 	return &Controller{
-		client: client,
-		stopCh: make(chan struct{}),
+		client:      client,
+		stopCh:      make(chan struct{}),
+		blackScreen: blackScreen,
 	}
 }
 
@@ -31,21 +32,15 @@ func NewController(client *wire.Client) *Controller {
 func (c *Controller) Start() error {
 	log.Printf("[input] Starting input controller...")
 
-	// Create and show black screen window (Windows only)
-	if runtime.GOOS == "windows" {
-		blackScreen, err := NewBlackScreenWindow()
-		if err != nil {
-			log.Printf("[input] Warning: Failed to create black screen: %v", err)
-		} else {
-			c.blackScreen = blackScreen
-			if err := blackScreen.Show(); err != nil {
-				log.Printf("[input] Warning: Failed to show black screen: %v", err)
-			}
+	// Show black screen if provided
+	if c.blackScreen != nil {
+		if err := c.blackScreen.Show(); err != nil {
+			log.Printf("[input] Warning: Failed to show black screen: %v", err)
 		}
-		// Ensure black screen is destroyed when done
+		// Ensure black screen is hidden when done
 		defer func() {
 			if c.blackScreen != nil {
-				c.blackScreen.Close()
+				c.blackScreen.Hide()
 			}
 		}()
 	}
@@ -102,95 +97,129 @@ func (c *Controller) Start() error {
 	frameCh := make(chan []byte, 60) // Buffer for 60 FPS (1 second of frames) - use bytes instead of base64 string
 	go c.receiveScreenFrames(frameCh)
 
-	// Check for hotkey from black screen window (Windows only)
+	// Check for hotkey from black screen
 	var hotkeyCh <-chan struct{}
 	var wheelCh <-chan model.MouseScrollEvent
-	if runtime.GOOS == "windows" && c.blackScreen != nil {
+	if c.blackScreen != nil {
 		hotkeyCh = c.blackScreen.GetHotkeyChannel()
 		wheelCh = c.blackScreen.GetWheelChannel()
+		log.Printf("[input] BlackScreen channels obtained: hotkeyCh=%v, wheelCh=%v", hotkeyCh != nil, wheelCh != nil)
+	} else {
+		log.Printf("[input] WARNING: No blackScreen provided to controller")
 	}
 
 	// Forward events to remote peer and handle screen frames
+	log.Printf("[input] Starting main event loop, hotkeyCh=%v, wheelCh=%v", hotkeyCh != nil, wheelCh != nil)
 	for {
-		select {
-		case event, ok := <-eventCh:
-			if !ok {
-				// Channel closed, but don't exit immediately - might be temporary
-				log.Printf("[input] Event channel closed, but keeping connection alive")
-				// Wait a bit and see if we should stop
-				select {
-				case <-c.stopCh:
-					return nil
-				default:
-					// Keep waiting for stop signal
-					continue
-				}
-			}
-
-			// Serialize the full event to JSON
-			eventData, err := json.Marshal(event)
-			if err != nil {
-				log.Printf("[input] Failed to marshal event: %v", err)
-				continue
-			}
-
-			// Check for stop hotkey (Ctrl+Shift+B) - only if not from black screen
-			if event.Type == "keyboard" && hotkeyCh == nil {
-				var kbEvent model.KeyboardEvent
-				if err := json.Unmarshal([]byte(event.Data), &kbEvent); err == nil {
-					if kbEvent.Key == "b" &&
-						shared.Contains(kbEvent.Modifiers, "ctrl") &&
-						shared.Contains(kbEvent.Modifiers, "shift") &&
-						kbEvent.Action == "press" {
-						log.Printf("[input] Stop hotkey detected (Ctrl+Shift+B)")
-						return fmt.Errorf("control stopped by user")
+		// Build select cases dynamically based on available channels
+		if hotkeyCh != nil && wheelCh != nil {
+			// Both channels available
+			select {
+			case event, ok := <-eventCh:
+				if !ok {
+					log.Printf("[input] Event channel closed, but keeping connection alive")
+					select {
+					case <-c.stopCh:
+						return nil
+					default:
+						continue
 					}
 				}
-			}
+				eventData, err := json.Marshal(event)
+				if err != nil {
+					log.Printf("[input] Failed to marshal event: %v", err)
+					continue
+				}
+				msg := &wire.Message{
+					Type: "input_event",
+					Data: string(eventData),
+				}
+				if err := c.client.Write(msg); err != nil {
+					log.Printf("[input] Failed to send input event: %v", err)
+					return fmt.Errorf("failed to send input event: %w", err)
+				}
+				log.Printf("[input] Sent input event: %s", event.Type)
 
-			// Send event to remote peer
-			msg := &wire.Message{
-				Type: "input_event",
-				Data: string(eventData),
-			}
-			if err := c.client.Write(msg); err != nil {
-				log.Printf("[input] Failed to send input event: %v", err)
-				return fmt.Errorf("failed to send input event: %w", err)
-			}
-			log.Printf("[input] Sent input event: %s", event.Type)
+			case frameData := <-frameCh:
+				if c.blackScreen != nil {
+					c.blackScreen.SetFrame(frameData)
+				}
 
-		case frameData := <-frameCh:
-			// Handle received screen frame - display in black screen window
-			if c.blackScreen != nil {
-				c.blackScreen.SetFrame(frameData)
-			}
+			case <-hotkeyCh:
+				log.Printf("[input] Stop hotkey detected (Ctrl+Shift+B) from black screen")
+				return fmt.Errorf("control stopped by user")
 
-		case <-hotkeyCh:
-			// Hotkey detected from black screen window
-			log.Printf("[input] Stop hotkey detected (Ctrl+Shift+B) from black screen")
-			return fmt.Errorf("control stopped by user")
+			case wheelEvent := <-wheelCh:
+				data, _ := json.Marshal(wheelEvent)
+				scrollEvent := model.InputEvent{
+					Type: "mouse_scroll",
+					Data: string(data),
+				}
+				eventData, _ := json.Marshal(scrollEvent)
+				msg := &wire.Message{
+					Type: "input_event",
+					Data: string(eventData),
+				}
+				if err := c.client.Write(msg); err != nil {
+					log.Printf("[input] Failed to send wheel event: %v", err)
+				} else {
+					log.Printf("[input] Sent wheel event: deltaY=%d", wheelEvent.DeltaY)
+				}
 
-		case wheelEvent := <-wheelCh:
-			// Mouse wheel event from black screen window
-			data, _ := json.Marshal(wheelEvent)
-			scrollEvent := model.InputEvent{
-				Type: "mouse_scroll",
-				Data: string(data),
+			case <-c.stopCh:
+				log.Printf("[input] Controller stopped")
+				return nil
 			}
-			eventData, _ := json.Marshal(scrollEvent)
-			msg := &wire.Message{
-				Type: "input_event",
-				Data: string(eventData),
-			}
-			if err := c.client.Write(msg); err != nil {
-				log.Printf("[input] Failed to send wheel event: %v", err)
-			} else {
-				log.Printf("[input] Sent wheel event: deltaY=%d", wheelEvent.DeltaY)
-			}
+		} else {
+			// Fallback: no blackscreen channels, use regular select
+			select {
+			case event, ok := <-eventCh:
+				if !ok {
+					log.Printf("[input] Event channel closed, but keeping connection alive")
+					select {
+					case <-c.stopCh:
+						return nil
+					default:
+						continue
+					}
+				}
+				eventData, err := json.Marshal(event)
+				if err != nil {
+					log.Printf("[input] Failed to marshal event: %v", err)
+					continue
+				}
+				// Check for stop hotkey (Ctrl+Shift+B) - only if not from black screen
+				if event.Type == "keyboard" && hotkeyCh == nil {
+					var kbEvent model.KeyboardEvent
+					if err := json.Unmarshal([]byte(event.Data), &kbEvent); err == nil {
+						if kbEvent.Key == "b" &&
+							shared.Contains(kbEvent.Modifiers, "ctrl") &&
+							shared.Contains(kbEvent.Modifiers, "shift") &&
+							kbEvent.Action == "press" {
+							log.Printf("[input] Stop hotkey detected (Ctrl+Shift+B)")
+							return fmt.Errorf("control stopped by user")
+						}
+					}
+				}
+				msg := &wire.Message{
+					Type: "input_event",
+					Data: string(eventData),
+				}
+				if err := c.client.Write(msg); err != nil {
+					log.Printf("[input] Failed to send input event: %v", err)
+					return fmt.Errorf("failed to send input event: %w", err)
+				}
+				log.Printf("[input] Sent input event: %s", event.Type)
 
-		case <-c.stopCh:
-			log.Printf("[input] Controller stopped")
-			return nil
+			case frameData := <-frameCh:
+				if c.blackScreen != nil {
+					c.blackScreen.SetFrame(frameData)
+				}
+
+			case <-c.stopCh:
+				log.Printf("[input] Controller stopped")
+				return nil
+			}
 		}
 	}
 }
@@ -221,7 +250,7 @@ func (c *Controller) receiveScreenFrames(frameCh chan<- []byte) {
 					log.Printf("[screen] Failed to decode base64 frame: %v", err)
 					continue
 				}
-				
+
 				select {
 				case frameCh <- frameBytes:
 					// Frame sent successfully

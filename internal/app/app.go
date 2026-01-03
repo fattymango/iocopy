@@ -17,6 +17,7 @@ const defaultPort = "8080"
 type App struct {
 	port   string
 	server *wire.Server
+	ui     *ui.UI
 }
 
 func NewApp(port string) (*App, error) {
@@ -40,7 +41,7 @@ func (a *App) Run() error {
 		return fmt.Errorf("failed to create asset server: %v", err)
 	}
 
-	ui := ui.NewUI(a, a.port)
+	a.ui = ui.NewUI(a, a.port)
 
 	return wails.Run(&options.App{
 		Title:  "IOCopy",
@@ -49,9 +50,9 @@ func (a *App) Run() error {
 
 		AssetServer: assetServer.GetServer(),
 
-		OnStartup: ui.Startup,
+		OnStartup: a.ui.Startup,
 		Bind: []interface{}{
-			ui,
+			a.ui,
 		},
 	})
 }
