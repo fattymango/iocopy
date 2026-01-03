@@ -58,6 +58,9 @@ func (w *WindowsInputCapture) Capture(eventCh chan<- model.InputEvent, stopCh <-
 	// Start mouse capture
 	go w.captureMouse(eventCh, stopCh)
 
+	// Mouse wheel capture disabled - was interfering with normal mouse operation
+	// TODO: Implement wheel capture using a different method that doesn't interfere
+
 	// Keep running until stopped
 	<-stopCh
 	log.Printf("[input] Windows input capture stopped")
@@ -291,6 +294,19 @@ func (w *WindowsInputCapture) captureMouse(eventCh chan<- model.InputEvent, stop
 	}
 }
 
+// captureMouseWheel - DISABLED: Was interfering with normal mouse operation
+// TODO: Implement wheel capture using a method that doesn't interfere with mouse movement
+// The low-level hook approach was blocking/consuming mouse messages
+func (w *WindowsInputCapture) captureMouseWheel(eventCh chan<- model.InputEvent, stopCh <-chan struct{}) {
+	// Disabled - wheel capture removed to fix mouse movement issues
+	return
+}
+
 func (w *WindowsInputCapture) Close() error {
+	// Clean up any hooks if they exist
+	if w.mouseHook != 0 {
+		windows.ProcUnhookWindowsHookEx.Call(w.mouseHook)
+		w.mouseHook = 0
+	}
 	return nil
 }

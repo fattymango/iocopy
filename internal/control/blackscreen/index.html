@@ -12,25 +12,220 @@
 			width: 100%;
 			height: 100%;
 			background-color: #000000;
-			overflow: hidden;
+			overflow: auto;
 			display: flex;
-			align-items: center;
-			justify-content: center;
+			align-items: flex-start;
+			justify-content: flex-start;
+			/* Force GPU acceleration on body */
+			transform: translateZ(0);
+			-webkit-transform: translateZ(0);
 		}
-		#screenImage {
-			max-width: 100%;
-			max-height: 100%;
-			object-fit: contain;
+		#screenCanvas {
+			display: block;
+			min-width: 100%;
+			min-height: 100%;
 			image-rendering: -webkit-optimize-contrast;
 			image-rendering: crisp-edges;
+			/* Force GPU acceleration */
+			will-change: contents;
+			transform: translateZ(0);
+			-webkit-transform: translateZ(0);
+			backface-visibility: hidden;
+			-webkit-backface-visibility: hidden;
+			perspective: 1000px;
+			-webkit-perspective: 1000px;
+		}
+		#performanceOverlay {
+			position: fixed;
+			top: 10px;
+			left: 10px;
+			background: rgba(0, 0, 0, 0.8);
+			color: #00ff00;
+			font-family: 'Courier New', monospace;
+			font-size: 14px;
+			padding: 10px;
+			border-radius: 5px;
+			border: 1px solid #00ff00;
+			z-index: 1000;
+			min-width: 200px;
+			line-height: 1.6;
+			pointer-events: none;
+			user-select: none;
+		}
+		#performanceOverlay .metric {
+			display: flex;
+			justify-content: space-between;
+			margin: 2px 0;
+		}
+		#performanceOverlay .label {
+			color: #888;
+		}
+		#performanceOverlay .value {
+			color: #00ff00;
+			font-weight: bold;
+		}
+		#performanceOverlay .value.good {
+			color: #00ff00;
+		}
+		#performanceOverlay .value.warning {
+			color: #ffff00;
+		}
+		#performanceOverlay .value.bad {
+			color: #ff0000;
 		}
 	</style>
 </head>
 <body>
-	<img id="screenImage" src="" alt="Remote Screen" />
+	<canvas id="screenCanvas"></canvas>
+	<div id="performanceOverlay">
+		<div class="metric">
+			<span class="label">FPS:</span>
+			<span class="value" id="fpsValue">0</span>
+		</div>
+		<div class="metric">
+			<span class="label">Frame Time:</span>
+			<span class="value" id="frameTimeValue">0 ms</span>
+		</div>
+		<div class="metric">
+			<span class="label">CPU Load:</span>
+			<span class="value" id="cpuLoadValue">0%</span>
+		</div>
+		<div class="metric">
+			<span class="label">GPU:</span>
+			<span class="value" id="gpuValue">N/A</span>
+		</div>
+		<div class="metric">
+			<span class="label">Frames Dropped:</span>
+			<span class="value" id="droppedFramesValue">0</span>
+		</div>
+	</div>
 	<script>
-		// Get reference to the image element
-		const screenImage = document.getElementById('screenImage');
+		// Get reference to canvas element
+		const canvas = document.getElementById('screenCanvas');
+		
+		// Use WebGL for hardware-accelerated rendering (forces GPU usage)
+		const gl = canvas.getContext('webgl', {
+			alpha: false,
+			antialias: false,
+			preserveDrawingBuffer: false,
+			powerPreference: 'high-performance',
+			desynchronized: true
+		}) || canvas.getContext('experimental-webgl', {
+			alpha: false,
+			antialias: false,
+			preserveDrawingBuffer: false,
+			powerPreference: 'high-performance'
+		});
+		
+		if (!gl) {
+			console.error('[blackscreen] WebGL not supported, falling back to 2D');
+			var ctx = canvas.getContext('2d', { 
+				alpha: false,
+				desynchronized: true,
+				willReadFrequently: false
+			});
+		}
+		
+		// WebGL setup for texture rendering
+		let texture = null;
+		let program = null;
+		let useWebGL = !!gl;
+		
+		if (useWebGL) {
+			// Create shader program for rendering textures
+			const vertexShaderSource = `
+				attribute vec2 a_position;
+				attribute vec2 a_texCoord;
+				varying vec2 v_texCoord;
+				void main() {
+					gl_Position = vec4(a_position, 0.0, 1.0);
+					v_texCoord = a_texCoord;
+				}
+			`;
+			
+			const fragmentShaderSource = `
+				precision mediump float;
+				uniform sampler2D u_texture;
+				varying vec2 v_texCoord;
+				void main() {
+					gl_FragColor = texture2D(u_texture, v_texCoord);
+				}
+			`;
+			
+			function createShader(gl, type, source) {
+				const shader = gl.createShader(type);
+				gl.shaderSource(shader, source);
+				gl.compileShader(shader);
+				if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+					console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+					gl.deleteShader(shader);
+					return null;
+				}
+				return shader;
+			}
+			
+			function createProgram(gl, vertexShader, fragmentShader) {
+				const program = gl.createProgram();
+				gl.attachShader(program, vertexShader);
+				gl.attachShader(program, fragmentShader);
+				gl.linkProgram(program);
+				if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+					console.error('Program link error:', gl.getProgramInfoLog(program));
+					gl.deleteProgram(program);
+					return null;
+				}
+				return program;
+			}
+			
+			const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+			const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+			program = createProgram(gl, vertexShader, fragmentShader);
+			
+			if (program) {
+				// Create buffer for full-screen quad
+				const positionBuffer = gl.createBuffer();
+				gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+				gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+					-1, -1,  1, -1,  -1, 1,
+					-1, 1,   1, -1,   1, 1
+				]), gl.STATIC_DRAW);
+				
+				const texCoordBuffer = gl.createBuffer();
+				gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+				gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+					0, 1,  1, 1,  0, 0,
+					0, 0,  1, 1,  1, 0
+				]), gl.STATIC_DRAW);
+				
+				// Store buffers and attribute locations
+				gl.positionBuffer = positionBuffer;
+				gl.texCoordBuffer = texCoordBuffer;
+				gl.positionLocation = gl.getAttribLocation(program, 'a_position');
+				gl.texCoordLocation = gl.getAttribLocation(program, 'a_texCoord');
+				gl.textureLocation = gl.getUniformLocation(program, 'u_texture');
+				
+				// Create texture
+				texture = gl.createTexture();
+				gl.bindTexture(gl.TEXTURE_2D, texture);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+				
+				console.log('[blackscreen] WebGL initialized for GPU acceleration');
+			} else {
+				useWebGL = false;
+			}
+		}
+		
+		// Set canvas size based on image dimensions
+		function resizeCanvasToImage(imageWidth, imageHeight) {
+			canvas.width = imageWidth;
+			canvas.height = imageHeight;
+			if (useWebGL && gl) {
+				gl.viewport(0, 0, canvas.width, canvas.height);
+			}
+		}
 
 		// Connect to WebSocket server for frame streaming
 		const wsPort = 8765;
@@ -38,19 +233,243 @@
 		let reconnectAttempts = 0;
 		const maxReconnectAttempts = 10;
 
+		// Frame queue for smooth rendering with requestAnimationFrame
+		let latestFrameBlob = null;
+		let latestImageBitmap = null;
+		let renderLoopActive = false;
+
+		// Performance monitoring
+		let frameCount = 0;
+		let lastFpsUpdate = performance.now();
+		let fps = 0;
+		let frameTimes = [];
+		let droppedFrames = 0;
+		let lastFrameTime = performance.now();
+		let totalFramesReceived = 0;
+		
+		// GPU detection
+		let gpuInfo = 'N/A';
+		async function detectGPU() {
+			try {
+				if ('gpu' in navigator) {
+					const adapter = await navigator.gpu.requestAdapter();
+					if (adapter) {
+						const info = await adapter.requestAdapterInfo();
+						gpuInfo = info.vendor || 'Unknown';
+						document.getElementById('gpuValue').textContent = gpuInfo;
+					}
+				} else if (gl) {
+					// Use the WebGL context we already created
+					const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+					if (debugInfo) {
+						const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+						const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+						gpuInfo = renderer || vendor || 'WebGL Active';
+						const displayText = gpuInfo.length > 30 ? gpuInfo.substring(0, 30) + '...' : gpuInfo;
+						document.getElementById('gpuValue').textContent = displayText;
+						console.log('[blackscreen] GPU detected:', gpuInfo);
+					} else {
+						gpuInfo = 'WebGL Active';
+						document.getElementById('gpuValue').textContent = gpuInfo;
+					}
+				} else {
+					gpuInfo = 'Software';
+					document.getElementById('gpuValue').textContent = gpuInfo;
+				}
+			} catch (e) {
+				console.log('[blackscreen] GPU detection failed:', e);
+				if (useWebGL) {
+					document.getElementById('gpuValue').textContent = 'WebGL Active';
+				}
+			}
+		}
+		
+		// Detect GPU after WebGL initialization
+		if (useWebGL) {
+			detectGPU();
+		} else {
+			detectGPU(); // Still try to detect even without WebGL
+		}
+
+		// Update performance metrics
+		function updatePerformanceMetrics(frameStartTime, frameEndTime) {
+			const frameTime = frameEndTime - frameStartTime;
+			frameTimes.push(frameTime);
+			if (frameTimes.length > 60) {
+				frameTimes.shift(); // Keep last 60 frames
+			}
+
+			// Calculate FPS
+			frameCount++;
+			const now = performance.now();
+			const elapsed = now - lastFpsUpdate;
+			if (elapsed >= 1000) {
+				fps = Math.round((frameCount * 1000) / elapsed);
+				frameCount = 0;
+				lastFpsUpdate = now;
+
+				// Update FPS display
+				const fpsElement = document.getElementById('fpsValue');
+				fpsElement.textContent = fps;
+				fpsElement.className = 'value ' + (fps >= 55 ? 'good' : fps >= 30 ? 'warning' : 'bad');
+
+				// Calculate average frame time
+				const avgFrameTime = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
+				const frameTimeElement = document.getElementById('frameTimeValue');
+				frameTimeElement.textContent = avgFrameTime.toFixed(1) + ' ms';
+				frameTimeElement.className = 'value ' + (avgFrameTime < 20 ? 'good' : avgFrameTime < 35 ? 'warning' : 'bad');
+
+				// Estimate CPU load (frame processing time / target frame time)
+				const targetFrameTime = 1000 / 60; // 16.67ms for 60 FPS
+				const cpuLoad = Math.min(100, Math.round((avgFrameTime / targetFrameTime) * 100));
+				const cpuElement = document.getElementById('cpuLoadValue');
+				cpuElement.textContent = cpuLoad + '%';
+				cpuElement.className = 'value ' + (cpuLoad < 50 ? 'good' : cpuLoad < 80 ? 'warning' : 'bad');
+
+				// Update dropped frames
+				document.getElementById('droppedFramesValue').textContent = droppedFrames;
+			}
+		}
+
+		// Render frames using requestAnimationFrame and ImageBitmap for hardware acceleration
+		async function renderFrame() {
+			const frameStartTime = performance.now();
+			
+			if (latestImageBitmap) {
+				// Resize canvas to match image dimensions for 1:1 pixel ratio
+				if (canvas.width !== latestImageBitmap.width || canvas.height !== latestImageBitmap.height) {
+					resizeCanvasToImage(latestImageBitmap.width, latestImageBitmap.height);
+				}
+				
+				if (useWebGL && gl && program) {
+					// Use WebGL for GPU-accelerated rendering
+					gl.useProgram(program);
+					
+					// Clear canvas with black
+					gl.clearColor(0.0, 0.0, 0.0, 1.0);
+					gl.clear(gl.COLOR_BUFFER_BIT);
+					
+					// Upload texture
+					gl.bindTexture(gl.TEXTURE_2D, texture);
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, latestImageBitmap);
+					
+					// Set up attributes
+					gl.bindBuffer(gl.ARRAY_BUFFER, gl.positionBuffer);
+					gl.enableVertexAttribArray(gl.positionLocation);
+					gl.vertexAttribPointer(gl.positionLocation, 2, gl.FLOAT, false, 0, 0);
+					
+					gl.bindBuffer(gl.ARRAY_BUFFER, gl.texCoordBuffer);
+					gl.enableVertexAttribArray(gl.texCoordLocation);
+					gl.vertexAttribPointer(gl.texCoordLocation, 2, gl.FLOAT, false, 0, 0);
+					
+					// Set texture uniform
+					gl.activeTexture(gl.TEXTURE0);
+					gl.bindTexture(gl.TEXTURE_2D, texture);
+					gl.uniform1i(gl.textureLocation, 0);
+					
+					// Draw
+					gl.drawArrays(gl.TRIANGLES, 0, 6);
+					
+					// Clean up old ImageBitmap
+					if (latestImageBitmap) {
+						latestImageBitmap.close();
+						latestImageBitmap = null;
+					}
+				} else if (ctx) {
+					// Fallback to 2D canvas - draw at full size (1:1 pixel ratio)
+					ctx.fillStyle = '#000000';
+					ctx.fillRect(0, 0, canvas.width, canvas.height);
+					
+					ctx.imageSmoothingEnabled = true;
+					ctx.imageSmoothingQuality = 'high';
+					ctx.drawImage(latestImageBitmap, 0, 0);
+					
+					// Clean up old ImageBitmap
+					if (latestImageBitmap) {
+						latestImageBitmap.close();
+						latestImageBitmap = null;
+					}
+				}
+			}
+			
+			// Process next frame if available
+			if (latestFrameBlob) {
+				try {
+					// Create ImageBitmap from blob (hardware-accelerated decoding)
+					const imageBitmap = await createImageBitmap(latestFrameBlob);
+					latestImageBitmap = imageBitmap;
+					latestFrameBlob = null; // Clear blob after creating ImageBitmap
+				} catch (err) {
+					console.error('[blackscreen] Failed to create ImageBitmap:', err);
+					latestFrameBlob = null;
+				}
+			}
+			
+			// Update performance metrics
+			const frameEndTime = performance.now();
+			updatePerformanceMetrics(frameStartTime, frameEndTime);
+			
+			// Check for dropped frames (if time since last frame is too long)
+			const timeSinceLastFrame = frameStartTime - lastFrameTime;
+			if (timeSinceLastFrame > 25) { // More than 25ms (should be ~16.67ms for 60 FPS)
+				droppedFrames++;
+			}
+			lastFrameTime = frameStartTime;
+			
+			// Continue render loop while WebSocket is connected
+			if (ws && ws.readyState === WebSocket.OPEN) {
+				requestAnimationFrame(renderFrame);
+			} else {
+				renderLoopActive = false;
+			}
+		}
+
+		function queueFrame(frameBlob) {
+			totalFramesReceived++;
+			
+			// Store latest frame blob (drop older ones if not processed yet)
+			if (latestFrameBlob) {
+				// Frame was dropped (replaced before being processed)
+				droppedFrames++;
+				// Clean up old blob
+				latestFrameBlob = null;
+			}
+			latestFrameBlob = frameBlob;
+			
+			// Start render loop if not already running
+			if (!renderLoopActive && ws && ws.readyState === WebSocket.OPEN) {
+				renderLoopActive = true;
+				requestAnimationFrame(renderFrame);
+			}
+		}
+
 		function connectWebSocket() {
 			try {
 				ws = new WebSocket('ws://127.0.0.1:' + wsPort + '/frames');
 				
+				// Configure WebSocket to receive binary messages as Blob (most efficient)
+				ws.binaryType = 'blob';
+				
 				ws.onopen = function() {
 					console.log('[blackscreen] WebSocket connected');
 					reconnectAttempts = 0;
+					// Start render loop when connected
+					if (!renderLoopActive) {
+						renderLoopActive = true;
+						requestAnimationFrame(renderFrame);
+					}
 				};
 
 				ws.onmessage = function(event) {
-					if (event.data) {
-						// Update image source with base64 data
-						screenImage.src = 'data:image/jpeg;base64,' + event.data;
+					if (event.data instanceof Blob) {
+						// Binary message received - create blob for ImageBitmap
+						queueFrame(event.data);
+					} else if (event.data instanceof ArrayBuffer) {
+						// ArrayBuffer received - convert to blob
+						queueFrame(new Blob([event.data], { type: 'image/jpeg' }));
+					} else {
+						// Fallback for text (shouldn't happen with binary messages)
+						console.warn('[blackscreen] Received non-binary message');
 					}
 				};
 
@@ -100,6 +519,28 @@
 				}
 			}
 		});
+
+		// Listen for mouse wheel events
+		document.addEventListener('wheel', function(e) {
+			e.preventDefault();
+			// Get wheel delta values
+			// deltaY: positive = scroll down, negative = scroll up
+			// deltaX: positive = scroll right, negative = scroll left
+			// Browser typically gives ~100 pixels per wheel "click"
+			// We normalize to integers: divide by 100 and round
+			// This gives us roughly 1 per click, which the executor multiplies by 120 (WHEEL_DELTA)
+			const deltaX = Math.round(e.deltaX / 100);
+			const deltaY = Math.round(e.deltaY / 100);
+			
+			// Only send if there's actual movement
+			if (deltaX !== 0 || deltaY !== 0) {
+				try {
+					window.go.control.BlackScreenApp.OnMouseWheel(deltaX, deltaY);
+				} catch (err) {
+					console.error('[blackscreen] Failed to send wheel event:', err);
+				}
+			}
+		}, { passive: false }); // passive: false allows preventDefault
 
 		// Prevent context menu
 		document.addEventListener('contextmenu', function(e) {

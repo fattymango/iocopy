@@ -5,6 +5,7 @@ package control
 
 import (
 	"context"
+	"copy/internal/model"
 	"embed"
 	"io/fs"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -30,10 +32,13 @@ var blackScreenAssets embed.FS
 
 // BlackScreenApp is the Wails app struct for handling hotkey and displaying frames
 type BlackScreenApp struct {
-	ctx      context.Context
-	hotkeyCh chan struct{}
-	wsConn   *websocket.Conn
-	wsMu     sync.Mutex
+	ctx        context.Context
+	hotkeyCh   chan struct{}
+	wheelCh    chan model.MouseScrollEvent
+	wsConn     *websocket.Conn
+	wsMu       sync.Mutex
+	frameQueue chan []byte // Use bytes instead of base64 string
+	stopFrame  chan struct{}
 }
 
 // OnHotkey is called from JavaScript when Ctrl+Shift+B is pressed
@@ -45,22 +50,58 @@ func (a *BlackScreenApp) OnHotkey() {
 	}
 }
 
-// SetFrame is called from Go to update the displayed frame
-func (a *BlackScreenApp) SetFrame(frameData string) {
-	a.wsMu.Lock()
-	conn := a.wsConn
-	a.wsMu.Unlock()
-
-	if conn != nil {
-		// Send frame data over WebSocket
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(frameData)); err != nil {
-			log.Printf("[blackscreen] Failed to send frame over WebSocket: %v", err)
-			// Clear connection on error
-			a.wsMu.Lock()
-			a.wsConn = nil
-			a.wsMu.Unlock()
-		}
+// OnMouseWheel is called from JavaScript when mouse wheel is scrolled
+func (a *BlackScreenApp) OnMouseWheel(deltaX, deltaY int) {
+	scrollEvent := model.MouseScrollEvent{
+		DeltaX: deltaX,
+		DeltaY: deltaY,
 	}
+	select {
+	case a.wheelCh <- scrollEvent:
+	default:
+		// Channel full, drop event
+	}
+}
+
+// SetFrame is called from Go to update the displayed frame (non-blocking)
+func (a *BlackScreenApp) SetFrame(frameData []byte) {
+	select {
+	case a.frameQueue <- frameData:
+		// Frame queued successfully
+	default:
+		// Queue full, drop frame to prevent blocking
+		// This prevents lag when browser can't keep up
+	}
+}
+
+// startFrameSender starts a goroutine that sends frames over WebSocket
+func (a *BlackScreenApp) startFrameSender() {
+	go func() {
+		for {
+			select {
+			case <-a.stopFrame:
+				return
+			case frameData := <-a.frameQueue:
+				a.wsMu.Lock()
+				conn := a.wsConn
+				a.wsMu.Unlock()
+
+				if conn != nil {
+					// Set write deadline to prevent blocking (100ms timeout)
+					conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+
+					// Send frame data as binary WebSocket message (more efficient than base64 text)
+					if err := conn.WriteMessage(websocket.BinaryMessage, frameData); err != nil {
+						log.Printf("[blackscreen] Failed to send frame over WebSocket: %v", err)
+						// Clear connection on error
+						a.wsMu.Lock()
+						a.wsConn = nil
+						a.wsMu.Unlock()
+					}
+				}
+			}
+		}
+	}()
 }
 
 // BlackScreenWindow manages a fullscreen black window using Wails
@@ -68,7 +109,8 @@ type BlackScreenWindow struct {
 	app        *BlackScreenApp
 	wg         sync.WaitGroup
 	stopCh     chan struct{}
-	hotkeyCh   chan struct{} // Channel to signal hotkey detected
+	hotkeyCh   chan struct{}               // Channel to signal hotkey detected
+	wheelCh    chan model.MouseScrollEvent // Channel for wheel events
 	running    bool
 	mu         sync.Mutex
 	ctx        context.Context
@@ -78,7 +120,7 @@ type BlackScreenWindow struct {
 }
 
 // SetFrame sets the frame data to display in the black screen window
-func (b *BlackScreenWindow) SetFrame(frameData string) {
+func (b *BlackScreenWindow) SetFrame(frameData []byte) {
 	b.mu.Lock()
 	app := b.app
 	b.mu.Unlock()
@@ -93,6 +135,7 @@ func NewBlackScreenWindow() (*BlackScreenWindow, error) {
 	return &BlackScreenWindow{
 		stopCh:   make(chan struct{}),
 		hotkeyCh: make(chan struct{}, 1),
+		wheelCh:  make(chan model.MouseScrollEvent, 10),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				// Allow connections from localhost only
@@ -105,6 +148,11 @@ func NewBlackScreenWindow() (*BlackScreenWindow, error) {
 // GetHotkeyChannel returns the channel that signals when stop hotkey is pressed
 func (b *BlackScreenWindow) GetHotkeyChannel() <-chan struct{} {
 	return b.hotkeyCh
+}
+
+// GetWheelChannel returns the channel that receives mouse wheel events
+func (b *BlackScreenWindow) GetWheelChannel() <-chan model.MouseScrollEvent {
+	return b.wheelCh
 }
 
 // Show creates and displays a fullscreen black window
@@ -129,8 +177,14 @@ func (b *BlackScreenWindow) Show() error {
 
 	// Create app struct
 	app := &BlackScreenApp{
-		hotkeyCh: b.hotkeyCh,
+		hotkeyCh:   b.hotkeyCh,
+		wheelCh:    b.wheelCh,
+		frameQueue: make(chan []byte, 2), // Small buffer - drop frames if browser can't keep up
+		stopFrame:  make(chan struct{}),
 	}
+
+	// Start frame sender goroutine
+	app.startFrameSender()
 
 	b.mu.Lock()
 	b.app = app
@@ -190,6 +244,11 @@ func (b *BlackScreenWindow) Show() error {
 			BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 255},
 			Bind:             []interface{}{app},
 
+			// Enable GPU acceleration for WebView2 (set to false to enable GPU)
+			Windows: &windows.Options{
+				WebviewGpuIsDisabled: false, // Enable GPU acceleration
+			},
+
 			OnStartup: func(ctx context.Context) {
 				app.ctx = ctx
 
@@ -231,6 +290,14 @@ func (b *BlackScreenWindow) Hide() error {
 	}
 	app := b.app
 	b.running = false
+
+	// Stop frame sender
+	select {
+	case <-app.stopFrame:
+		// Already closed
+	default:
+		close(app.stopFrame)
+	}
 
 	// Close WebSocket connection if open
 	if app.wsConn != nil {

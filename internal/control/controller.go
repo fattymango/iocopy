@@ -5,6 +5,7 @@ import (
 	"copy/internal/model"
 	"copy/internal/shared"
 	"copy/internal/wire"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -98,13 +99,15 @@ func (c *Controller) Start() error {
 	log.Printf("[input] Control session established")
 
 	// Start receiving screen frames in background
-	frameCh := make(chan string, 60) // Buffer for 60 FPS (1 second of frames)
+	frameCh := make(chan []byte, 60) // Buffer for 60 FPS (1 second of frames) - use bytes instead of base64 string
 	go c.receiveScreenFrames(frameCh)
 
 	// Check for hotkey from black screen window (Windows only)
 	var hotkeyCh <-chan struct{}
+	var wheelCh <-chan model.MouseScrollEvent
 	if runtime.GOOS == "windows" && c.blackScreen != nil {
 		hotkeyCh = c.blackScreen.GetHotkeyChannel()
+		wheelCh = c.blackScreen.GetWheelChannel()
 	}
 
 	// Forward events to remote peer and handle screen frames
@@ -167,6 +170,24 @@ func (c *Controller) Start() error {
 			log.Printf("[input] Stop hotkey detected (Ctrl+Shift+B) from black screen")
 			return fmt.Errorf("control stopped by user")
 
+		case wheelEvent := <-wheelCh:
+			// Mouse wheel event from black screen window
+			data, _ := json.Marshal(wheelEvent)
+			scrollEvent := model.InputEvent{
+				Type: "mouse_scroll",
+				Data: string(data),
+			}
+			eventData, _ := json.Marshal(scrollEvent)
+			msg := &wire.Message{
+				Type: "input_event",
+				Data: string(eventData),
+			}
+			if err := c.client.Write(msg); err != nil {
+				log.Printf("[input] Failed to send wheel event: %v", err)
+			} else {
+				log.Printf("[input] Sent wheel event: deltaY=%d", wheelEvent.DeltaY)
+			}
+
 		case <-c.stopCh:
 			log.Printf("[input] Controller stopped")
 			return nil
@@ -175,7 +196,7 @@ func (c *Controller) Start() error {
 }
 
 // receiveScreenFrames receives screen frames from the controlled device
-func (c *Controller) receiveScreenFrames(frameCh chan<- string) {
+func (c *Controller) receiveScreenFrames(frameCh chan<- []byte) {
 	log.Printf("[screen] Starting to receive screen frames")
 	defer close(frameCh)
 
@@ -194,9 +215,15 @@ func (c *Controller) receiveScreenFrames(frameCh chan<- string) {
 
 			// Handle screen frame messages
 			if msg.Type == "screen_frame" {
-				// Frame data is already base64 encoded, send directly
+				// Decode base64 to bytes for efficient binary transmission
+				frameBytes, err := base64.StdEncoding.DecodeString(msg.Data)
+				if err != nil {
+					log.Printf("[screen] Failed to decode base64 frame: %v", err)
+					continue
+				}
+				
 				select {
-				case frameCh <- msg.Data:
+				case frameCh <- frameBytes:
 					// Frame sent successfully
 				default:
 					// Channel full, skip this frame (non-blocking)
