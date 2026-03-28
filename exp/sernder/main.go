@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
-	"image"
-	"image/jpeg"
 	"log"
 	"net"
 	"time"
@@ -13,52 +10,57 @@ import (
 )
 
 func main() {
-	addr := "localhost:9000" // RECEIVER IP
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", "localhost:9000")
 	if err != nil {
 		log.Fatal("dial error:", err)
 	}
 	defer conn.Close()
 
-	log.Println("[sender] connected to", addr)
+	log.Println("[sender] connected")
 
-	for {
-		img, err := captureScreen()
+	// TCP optimization
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		tcp.SetNoDelay(true)
+	}
+
+	// get screen once
+	bounds := screenshot.GetDisplayBounds(0)
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	// send resolution once
+	if err := binary.Write(conn, binary.BigEndian, int32(width)); err != nil {
+		log.Fatal(err)
+	}
+	if err := binary.Write(conn, binary.BigEndian, int32(height)); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("[sender] resolution: %dx%d\n", width, height)
+
+	ticker := time.NewTicker(time.Second / 60) // ~60 FPS
+	defer ticker.Stop()
+
+	for range ticker.C {
+		img, err := screenshot.CaptureRect(bounds)
 		if err != nil {
 			log.Println("capture error:", err)
 			continue
 		}
 
-		var buf bytes.Buffer
-		err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 60})
-		if err != nil {
-			log.Println("jpeg error:", err)
-			continue
-		}
+		data := img.Pix
 
-		data := buf.Bytes()
-
-		// write frame size
-		err = binary.Write(conn, binary.BigEndian, uint32(len(data)))
-		if err != nil {
+		// send size
+		if err := binary.Write(conn, binary.BigEndian, uint32(len(data))); err != nil {
 			log.Println("write size error:", err)
 			return
 		}
 
-		// write frame
+		// send raw pixels
 		_, err = conn.Write(data)
 		if err != nil {
 			log.Println("write frame error:", err)
 			return
 		}
-
-		log.Printf("[sender] sent frame: %d bytes\n", len(data))
-		time.Sleep(50 * time.Millisecond) // ~20 FPS
 	}
-}
-
-func captureScreen() (*image.RGBA, error) {
-	// capture primary display only (simple)
-	bounds := screenshot.GetDisplayBounds(0)
-	return screenshot.CaptureRect(bounds)
 }

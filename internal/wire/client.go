@@ -38,6 +38,18 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
+// GetConn returns the underlying connection (for binary frame reading)
+func (c *Client) GetConn() net.Conn {
+	return c.conn
+}
+
 func connect(addr string) (net.Conn, error) {
-	return net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
+	return conn, nil
 }

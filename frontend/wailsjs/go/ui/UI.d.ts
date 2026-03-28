@@ -3,6 +3,24 @@
 
 export function Connect(arg1:string):Promise<void>;
 
+export function GetHotkeyChannel():Promise<any>;
+
+export function GetWheelChannel():Promise<any>;
+
+export function Hide():Promise<void>;
+
+export function HideBlackScreen():Promise<void>;
+
 export function LocalIP():Promise<string>;
 
+export function OnHotkey():Promise<void>;
+
+export function OnMouseWheel(arg1:number,arg2:number):Promise<void>;
+
 export function ScanPeers():Promise<Array<string>>;
+
+export function SetFrame(arg1:Array<number>):Promise<void>;
+
+export function Show():Promise<void>;
+
+export function ShowBlackScreen():Promise<void>;

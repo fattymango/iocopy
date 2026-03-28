@@ -6,10 +6,46 @@ export function Connect(arg1) {
   return window['go']['ui']['UI']['Connect'](arg1);
 }
 
+export function GetHotkeyChannel() {
+  return window['go']['ui']['UI']['GetHotkeyChannel']();
+}
+
+export function GetWheelChannel() {
+  return window['go']['ui']['UI']['GetWheelChannel']();
+}
+
+export function Hide() {
+  return window['go']['ui']['UI']['Hide']();
+}
+
+export function HideBlackScreen() {
+  return window['go']['ui']['UI']['HideBlackScreen']();
+}
+
 export function LocalIP() {
   return window['go']['ui']['UI']['LocalIP']();
 }
 
+export function OnHotkey() {
+  return window['go']['ui']['UI']['OnHotkey']();
+}
+
+export function OnMouseWheel(arg1, arg2) {
+  return window['go']['ui']['UI']['OnMouseWheel'](arg1, arg2);
+}
+
 export function ScanPeers() {
   return window['go']['ui']['UI']['ScanPeers']();
+}
+
+export function SetFrame(arg1) {
+  return window['go']['ui']['UI']['SetFrame'](arg1);
+}
+
+export function Show() {
+  return window['go']['ui']['UI']['Show']();
+}
+
+export function ShowBlackScreen() {
+  return window['go']['ui']['UI']['ShowBlackScreen']();
 }

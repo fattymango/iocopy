@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Peer Scanner</title>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f172a;
+      color: #e5e7eb;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+
+    #app {
+      width: 420px;
+      background: #020617;
+      border-radius: 10px;
+      padding: 20px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+
+    h1 {
+      font-size: 18px;
+      margin-bottom: 12px;
+      text-align: center;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      border-radius: 6px;
+      border: none;
+      background: #2563eb;
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    button.secondary {
+      background: #334155;
+      margin-top: 10px;
+    }
+
+    #spinner {
+      display: none;
+      text-align: center;
+      margin: 30px 0;
+    }
+
+    .loader {
+      width: 36px;
+      height: 36px;
+      border: 4px solid #334155;
+      border-top-color: #2563eb;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 10px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    li {
+      background: #020617;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      text-align: center;
+    }
+
+    li:hover {
+      background: #020617;
+      border-color: #2563eb;
+    }
+
+    #status {
+      text-align: center;
+      font-size: 13px;
+      margin-top: 10px;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <h1>Finding peers...</h1>
+
+    <div id="spinner">
+      <div class="loader"></div>
+      <div>Scanning network</div>
+    </div>
+
+    <ul id="ipList"></ul>
+
+    <button id="rescanBtn" class="secondary" style="display:none;">
+      Scan again
+    </button>
+
+    <div id="status"></div>
+  </div>
+
+  <script>
+    const spinner = document.getElementById("spinner")
+    const ipList = document.getElementById("ipList")
+    const status = document.getElementById("status")
+    const rescanBtn = document.getElementById("rescanBtn")
+    const title = document.querySelector("h1")
+
+    async function scanPeers() {
+      title.textContent = "Finding peers..."
+      spinner.style.display = "block"
+      ipList.innerHTML = ""
+      status.textContent = ""
+      rescanBtn.style.display = "none"
+
+      try {
+        const ips = await window.go.app.UI.ScanPeers()
+
+        spinner.style.display = "none"
+
+        if (!ips || ips.length === 0) {
+          title.textContent = "No peers found"
+          rescanBtn.style.display = "block"
+          return
+        }
+
+        title.textContent = "Select a peer"
+
+        ips.forEach(ip => {
+          const li = document.createElement("li")
+          li.textContent = ip
+          li.onclick = () => connect(ip)
+          ipList.appendChild(li)
+        })
+
+      } catch (err) {
+        spinner.style.display = "none"
+        title.textContent = "Error"
+        status.textContent = err
+        rescanBtn.style.display = "block"
+      }
+    }
+
+    async function connect(ip) {
+      title.textContent = `Connected to ${ip}`
+      ipList.innerHTML = ""
+      spinner.style.display = "block"
+      status.textContent = "Control session active..."
+
+      try {
+        await window.go.app.UI.Connect(ip)
+      } catch (err) {
+        console.error(err)
+      }
+
+      spinner.style.display = "none"
+      status.textContent = "Session ended"
+      rescanBtn.style.display = "block"
+    }
+
+    rescanBtn.onclick = scanPeers
+
+    // Start scanning when UI loads
+    scanPeers()
+  </script>
+</body>
+</html>

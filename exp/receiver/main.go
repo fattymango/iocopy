@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"image"
-	"image/jpeg"
 	"io"
 	"log"
 	"net"
@@ -14,8 +12,14 @@ import (
 )
 
 var (
-	frame image.Image
-	mu    sync.RWMutex
+	frame    *image.RGBA
+	mu       sync.RWMutex
+	ebiImage *ebiten.Image
+
+	width32  int32
+	height32 int32
+	width    int
+	height   int
 )
 
 func main() {
@@ -30,15 +34,13 @@ func main() {
 }
 
 func startServer() {
-	addr := ":9000"
-
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", ":9000")
 	if err != nil {
 		log.Fatal("listen error:", err)
 	}
 	defer ln.Close()
 
-	log.Println("[receiver] listening on", addr)
+	log.Println("[receiver] listening on :9000")
 
 	conn, err := ln.Accept()
 	if err != nil {
@@ -48,6 +50,26 @@ func startServer() {
 
 	log.Println("[receiver] client connected")
 
+	// TCP optimization
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		tcp.SetNoDelay(true)
+	}
+
+	// read width & height once
+	if err := binary.Read(conn, binary.BigEndian, &width32); err != nil {
+		log.Fatal(err)
+	}
+	if err := binary.Read(conn, binary.BigEndian, &height32); err != nil {
+		log.Fatal(err)
+	}
+
+	width = int(width32)
+	height = int(height32)
+
+	log.Printf("[receiver] resolution: %dx%d\n", width, height)
+
+	var buf []byte
+
 	for {
 		var size uint32
 		if err := binary.Read(conn, binary.BigEndian, &size); err != nil {
@@ -55,31 +77,32 @@ func startServer() {
 			return
 		}
 
-		buf := make([]byte, size)
+		// reuse buffer
+		if cap(buf) < int(size) {
+			buf = make([]byte, size)
+		}
+		buf = buf[:size]
+
 		if _, err := io.ReadFull(conn, buf); err != nil {
 			log.Println("read frame error:", err)
 			return
 		}
 
-		img, err := jpeg.Decode(bytes.NewReader(buf))
-		if err != nil {
-			log.Println("jpeg decode error:", err)
-			continue
+		img := &image.RGBA{
+			Pix:    buf,
+			Stride: 4 * width,
+			Rect:   image.Rect(0, 0, width, height),
 		}
 
 		mu.Lock()
 		frame = img
 		mu.Unlock()
-
-		log.Printf("[receiver] frame received: %d bytes\n", size)
 	}
 }
 
 type Game struct{}
 
-func (g *Game) Update() error {
-	return nil
-}
+func (g *Game) Update() error { return nil }
 
 func (g *Game) Draw(screen *ebiten.Image) {
 	mu.RLock()
@@ -90,10 +113,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		return
 	}
 
-	eimg := ebiten.NewImageFromImage(img)
+	// Create once
+	if ebiImage == nil {
+		ebiImage = ebiten.NewImageFromImage(img)
+	} else {
+		ebiImage.ReplacePixels(img.Pix)
+	}
 
-	op := &ebiten.DrawImageOptions{}
-	screen.DrawImage(eimg, op)
+	screen.DrawImage(ebiImage, nil)
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {

@@ -27,13 +27,9 @@
 			image-rendering: -webkit-optimize-contrast;
 			image-rendering: crisp-edges;
 			/* Force GPU acceleration */
-			will-change: contents;
+			will-change: transform;
 			transform: translateZ(0);
 			-webkit-transform: translateZ(0);
-			backface-visibility: hidden;
-			-webkit-backface-visibility: hidden;
-			perspective: 1000px;
-			-webkit-perspective: 1000px;
 		}
 	</style>
 </head>
@@ -57,13 +53,17 @@
 			powerPreference: 'high-performance'
 		});
 		
+		// Always use 2D canvas - more reliable and less flicker
+		var ctx = canvas.getContext('2d', { 
+			alpha: false,
+			desynchronized: true,
+			willReadFrequently: false
+		});
+		
 		if (!gl) {
-			console.error('[blackscreen] WebGL not supported, falling back to 2D');
-			var ctx = canvas.getContext('2d', { 
-				alpha: false,
-				desynchronized: true,
-				willReadFrequently: false
-			});
+			console.log('[blackscreen] WebGL not available, using 2D canvas');
+		} else {
+			console.log('[blackscreen] WebGL available but using 2D canvas for stability');
 		}
 		
 		// WebGL setup for texture rendering
@@ -173,116 +173,143 @@
 		let reconnectAttempts = 0;
 		const maxReconnectAttempts = 10;
 
-		// Frame queue for smooth rendering with requestAnimationFrame
-		let latestFrameBlob = null;
-		let latestImageBitmap = null;
-		let renderLoopActive = false;
+		// Frame queue for JPEG legacy; raw RGBA uses pendingRawImageData
+		let frameQueue = [];
+		let maxQueueSize = 1;
+		let isRendering = false;
+		let currentImage = null;
+		let pendingRawImageData = null;
+		let lastRenderTime = 0;
+		const minRenderInterval = 16;
 
-		// Performance tracking (for internal use, not displayed)
-		let droppedFrames = 0;
-		let lastFrameTime = performance.now();
-
-		// Render frames using requestAnimationFrame and ImageBitmap for hardware acceleration
 		async function renderFrame() {
-			if (latestImageBitmap) {
-				// Resize canvas to match image dimensions for 1:1 pixel ratio
-				if (canvas.width !== latestImageBitmap.width || canvas.height !== latestImageBitmap.height) {
-					resizeCanvasToImage(latestImageBitmap.width, latestImageBitmap.height);
+			const now = performance.now();
+
+			if (now - lastRenderTime < minRenderInterval) {
+				if (ws && ws.readyState === WebSocket.OPEN) {
+					requestAnimationFrame(renderFrame);
 				}
-				
-				if (useWebGL && gl && program) {
-					// Use WebGL for GPU-accelerated rendering
-					gl.useProgram(program);
-					
-					// Clear canvas with black
-					gl.clearColor(0.0, 0.0, 0.0, 1.0);
-					gl.clear(gl.COLOR_BUFFER_BIT);
-					
-					// Upload texture
-					gl.bindTexture(gl.TEXTURE_2D, texture);
-					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, latestImageBitmap);
-					
-					// Set up attributes
-					gl.bindBuffer(gl.ARRAY_BUFFER, gl.positionBuffer);
-					gl.enableVertexAttribArray(gl.positionLocation);
-					gl.vertexAttribPointer(gl.positionLocation, 2, gl.FLOAT, false, 0, 0);
-					
-					gl.bindBuffer(gl.ARRAY_BUFFER, gl.texCoordBuffer);
-					gl.enableVertexAttribArray(gl.texCoordLocation);
-					gl.vertexAttribPointer(gl.texCoordLocation, 2, gl.FLOAT, false, 0, 0);
-					
-					// Set texture uniform
-					gl.activeTexture(gl.TEXTURE0);
-					gl.bindTexture(gl.TEXTURE_2D, texture);
-					gl.uniform1i(gl.textureLocation, 0);
-					
-					// Draw
-					gl.drawArrays(gl.TRIANGLES, 0, 6);
-					
-					// Clean up old ImageBitmap
-					if (latestImageBitmap) {
-						latestImageBitmap.close();
-						latestImageBitmap = null;
-					}
-				} else if (ctx) {
-					// Fallback to 2D canvas - draw at full size (1:1 pixel ratio)
-					ctx.fillStyle = '#000000';
-					ctx.fillRect(0, 0, canvas.width, canvas.height);
-					
-					ctx.imageSmoothingEnabled = true;
-					ctx.imageSmoothingQuality = 'high';
-					ctx.drawImage(latestImageBitmap, 0, 0);
-					
-					// Clean up old ImageBitmap
-					if (latestImageBitmap) {
-						latestImageBitmap.close();
-						latestImageBitmap = null;
-					}
-				}
+				return;
 			}
-			
-			// Process next frame if available
-			if (latestFrameBlob) {
+
+			if (isRendering) {
+				if (ws && ws.readyState === WebSocket.OPEN) {
+					requestAnimationFrame(renderFrame);
+				}
+				return;
+			}
+
+			if (pendingRawImageData) {
+				isRendering = true;
+				lastRenderTime = now;
+				const id = pendingRawImageData;
+				pendingRawImageData = null;
 				try {
-					// Create ImageBitmap from blob (hardware-accelerated decoding)
-					const imageBitmap = await createImageBitmap(latestFrameBlob);
-					latestImageBitmap = imageBitmap;
-					latestFrameBlob = null; // Clear blob after creating ImageBitmap
-				} catch (err) {
-					console.error('[blackscreen] Failed to create ImageBitmap:', err);
-					latestFrameBlob = null;
+					if (canvas.width !== id.width || canvas.height !== id.height) {
+						canvas.width = id.width;
+						canvas.height = id.height;
+						if (useWebGL && gl) {
+							gl.viewport(0, 0, canvas.width, canvas.height);
+						}
+					}
+					if (ctx) {
+						ctx.putImageData(id, 0, 0);
+					} else if (useWebGL && gl && program) {
+						gl.useProgram(program);
+						gl.bindTexture(gl.TEXTURE_2D, texture);
+						gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, id.width, id.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, id.data);
+						gl.bindBuffer(gl.ARRAY_BUFFER, gl.positionBuffer);
+						gl.enableVertexAttribArray(gl.positionLocation);
+						gl.vertexAttribPointer(gl.positionLocation, 2, gl.FLOAT, false, 0, 0);
+						gl.bindBuffer(gl.ARRAY_BUFFER, gl.texCoordBuffer);
+						gl.enableVertexAttribArray(gl.texCoordLocation);
+						gl.vertexAttribPointer(gl.texCoordLocation, 2, gl.FLOAT, false, 0, 0);
+						gl.activeTexture(gl.TEXTURE0);
+						gl.uniform1i(gl.textureLocation, 0);
+						gl.drawArrays(gl.TRIANGLES, 0, 6);
+					}
+				} finally {
+					isRendering = false;
 				}
 			}
-			
-			// Check for dropped frames (if time since last frame is too long)
-			const frameStartTime = performance.now();
-			const timeSinceLastFrame = frameStartTime - lastFrameTime;
-			if (timeSinceLastFrame > 25) { // More than 25ms (should be ~16.67ms for 60 FPS)
-				droppedFrames++;
+
+			let frameBlob = null;
+			if (frameQueue.length > 0) {
+				frameBlob = frameQueue[frameQueue.length - 1];
+				frameQueue = [];
 			}
-			lastFrameTime = frameStartTime;
-			
-			// Continue render loop while WebSocket is connected
+
+			if (frameBlob) {
+				isRendering = true;
+				lastRenderTime = now;
+				try {
+					const imageBitmap = await createImageBitmap(frameBlob);
+					if (canvas.width !== imageBitmap.width || canvas.height !== imageBitmap.height) {
+						canvas.width = imageBitmap.width;
+						canvas.height = imageBitmap.height;
+						if (useWebGL && gl) {
+							gl.viewport(0, 0, canvas.width, canvas.height);
+						}
+					}
+					if (ctx) {
+						ctx.drawImage(imageBitmap, 0, 0);
+					} else if (useWebGL && gl && program) {
+						gl.useProgram(program);
+						gl.bindTexture(gl.TEXTURE_2D, texture);
+						gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imageBitmap);
+						gl.bindBuffer(gl.ARRAY_BUFFER, gl.positionBuffer);
+						gl.enableVertexAttribArray(gl.positionLocation);
+						gl.vertexAttribPointer(gl.positionLocation, 2, gl.FLOAT, false, 0, 0);
+						gl.bindBuffer(gl.ARRAY_BUFFER, gl.texCoordBuffer);
+						gl.enableVertexAttribArray(gl.texCoordLocation);
+						gl.vertexAttribPointer(gl.texCoordLocation, 2, gl.FLOAT, false, 0, 0);
+						gl.activeTexture(gl.TEXTURE0);
+						gl.uniform1i(gl.textureLocation, 0);
+						gl.drawArrays(gl.TRIANGLES, 0, 6);
+					}
+					if (currentImage) {
+						currentImage.close();
+					}
+					currentImage = imageBitmap;
+				} catch (err) {
+					console.error('[blackscreen] Failed to render frame:', err);
+				} finally {
+					isRendering = false;
+				}
+			}
+
 			if (ws && ws.readyState === WebSocket.OPEN) {
 				requestAnimationFrame(renderFrame);
-			} else {
-				renderLoopActive = false;
 			}
 		}
 
 		function queueFrame(frameBlob) {
-			// Store latest frame blob (drop older ones if not processed yet)
-			if (latestFrameBlob) {
-				// Frame was dropped (replaced before being processed)
-				droppedFrames++;
-				// Clean up old blob
-				latestFrameBlob = null;
+			frameQueue.push(frameBlob);
+			if (frameQueue.length > maxQueueSize) {
+				frameQueue.shift();
 			}
-			latestFrameBlob = frameBlob;
-			
-			// Start render loop if not already running
-			if (!renderLoopActive && ws && ws.readyState === WebSocket.OPEN) {
-				renderLoopActive = true;
+			if (!isRendering && ws && ws.readyState === WebSocket.OPEN) {
+				requestAnimationFrame(renderFrame);
+			}
+		}
+
+		function dispatchBinaryFrame(buf) {
+			const u8 = new Uint8Array(buf);
+			if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xD8) {
+				queueFrame(new Blob([u8], { type: 'image/jpeg' }));
+				return;
+			}
+			if (u8.length < 8) return;
+			const dv = new DataView(buf);
+			const w = dv.getUint32(0, false);
+			const h = dv.getUint32(4, false);
+			if (!w || !h || w > 16384 || h > 16384) return;
+			if (u8.length !== 8 + w * h * 4) {
+				console.warn('[blackscreen] raw frame size mismatch');
+				return;
+			}
+			pendingRawImageData = new ImageData(new Uint8ClampedArray(u8.subarray(8)), w, h);
+			if (!isRendering && ws && ws.readyState === WebSocket.OPEN) {
 				requestAnimationFrame(renderFrame);
 			}
 		}
@@ -291,28 +318,22 @@
 			try {
 				ws = new WebSocket('ws://127.0.0.1:' + wsPort + '/frames');
 				
-				// Configure WebSocket to receive binary messages as Blob (most efficient)
-				ws.binaryType = 'blob';
+				ws.binaryType = 'arraybuffer';
 				
 				ws.onopen = function() {
 					console.log('[blackscreen] WebSocket connected');
 					reconnectAttempts = 0;
-					// Start render loop when connected
-					if (!renderLoopActive) {
-						renderLoopActive = true;
-						requestAnimationFrame(renderFrame);
-					}
+					requestAnimationFrame(renderFrame);
 				};
 
 				ws.onmessage = function(event) {
-					if (event.data instanceof Blob) {
-						// Binary message received - create blob for ImageBitmap
-						queueFrame(event.data);
-					} else if (event.data instanceof ArrayBuffer) {
-						// ArrayBuffer received - convert to blob
-						queueFrame(new Blob([event.data], { type: 'image/jpeg' }));
+					if (event.data instanceof ArrayBuffer) {
+						dispatchBinaryFrame(event.data);
+					} else if (event.data instanceof Blob) {
+						event.data.arrayBuffer().then(dispatchBinaryFrame).catch(function(e) {
+							console.error('[blackscreen] arrayBuffer failed:', e);
+						});
 					} else {
-						// Fallback for text (shouldn't happen with binary messages)
 						console.warn('[blackscreen] Received non-binary message');
 					}
 				};

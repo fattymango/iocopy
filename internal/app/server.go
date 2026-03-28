@@ -4,7 +4,6 @@ import (
 	"copy/internal/control"
 	"copy/internal/screencapture"
 	"copy/internal/wire"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
@@ -76,7 +75,7 @@ func handleServerConnection(s *wire.Server, conn net.Conn) {
 			if err := wire.Send(conn, ack); err != nil {
 				log.Printf("[server] Failed to send control ack: %v", err)
 			}
-			// Start screen capture and sending frames
+			// Start screen capture and sending raw RGBA frames (matches exp sender protocol on the wire)
 			go startScreenCapture(conn, screenCapture, screenCaptureStopCh, remoteIP)
 		case "input_event":
 			if err := receiver.HandleMessage(&msg); err != nil {
@@ -92,7 +91,18 @@ func handleServerConnection(s *wire.Server, conn net.Conn) {
 // startScreenCapture captures the screen and sends frames to the controlling peer
 func startScreenCapture(conn net.Conn, capture screencapture.ScreenCapture, stopCh chan struct{}, remoteIP string) {
 	log.Printf("[screen] Starting screen capture for %s", remoteIP)
-	ticker := time.NewTicker(time.Second / 60) // 60 FPS
+
+	w, h := capture.Bounds()
+	meta := fmt.Sprintf(`{"width":%d,"height":%d}`, w, h)
+	if err := wire.Send(conn, &wire.Message{Type: "screen_stream_meta", Data: meta}); err != nil {
+		log.Printf("[screen] Failed to send stream meta: %v", err)
+		return
+	}
+	log.Printf("[screen] Stream dimensions %dx%d for %s", w, h, remoteIP)
+	lastW, lastH := w, h
+
+	frameInterval := time.Second / 30
+	ticker := time.NewTicker(frameInterval)
 	defer ticker.Stop()
 
 	for {
@@ -101,22 +111,35 @@ func startScreenCapture(conn net.Conn, capture screencapture.ScreenCapture, stop
 			log.Printf("[screen] Screen capture stopped for %s", remoteIP)
 			return
 		case <-ticker.C:
-			// Capture screen
+			fw, fh := capture.Bounds()
+			if fw != lastW || fh != lastH {
+				meta := fmt.Sprintf(`{"width":%d,"height":%d}`, fw, fh)
+				if err := wire.Send(conn, &wire.Message{Type: "screen_stream_meta", Data: meta}); err != nil {
+					log.Printf("[screen] Failed to send stream meta: %v", err)
+					return
+				}
+				lastW, lastH = fw, fh
+				log.Printf("[screen] Stream dimensions updated to %dx%d for %s", fw, fh, remoteIP)
+			}
 			frameData, err := capture.Capture()
 			if err != nil {
 				log.Printf("[screen] Failed to capture screen: %v", err)
 				continue
 			}
+			if exp := fw * fh * 4; exp != len(frameData) {
+				log.Printf("[screen] Unexpected frame size: got %d want %d", len(frameData), exp)
+				continue
+			}
 
-			// Encode frame as base64 for JSON transmission
-			encodedFrame := base64.StdEncoding.EncodeToString(frameData)
-
-			// Send frame to controlling peer
 			frameMsg := &wire.Message{
-				Type: "screen_frame",
-				Data: encodedFrame,
+				Type: "screen_frame_binary",
+				Data: "",
 			}
 			if err := wire.Send(conn, frameMsg); err != nil {
+				log.Printf("[screen] Failed to send frame header: %v", err)
+				return
+			}
+			if err := wire.SendBinaryFrame(conn, frameData); err != nil {
 				log.Printf("[screen] Failed to send screen frame: %v", err)
 				return
 			}

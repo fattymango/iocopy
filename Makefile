@@ -9,4 +9,4 @@ build-windows:
 	@GOOS=windows GOARCH=amd64 go build -tags dev -gcflags "all=-N -l" -o build/ipscan-windows.exe main.go
 
 run:
-	@go run .
+	@go run -tags dev -gcflags "all=-N -l" main.go

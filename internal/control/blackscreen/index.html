@@ -236,6 +236,7 @@
 		// Frame queue for smooth rendering with requestAnimationFrame
 		let latestFrameBlob = null;
 		let latestImageBitmap = null;
+		let pendingRawImageData = null;
 		let renderLoopActive = false;
 
 		// Performance monitoring
@@ -334,6 +335,33 @@
 		// Render frames using requestAnimationFrame and ImageBitmap for hardware acceleration
 		async function renderFrame() {
 			const frameStartTime = performance.now();
+
+			if (pendingRawImageData) {
+				const id = pendingRawImageData;
+				pendingRawImageData = null;
+				if (canvas.width !== id.width || canvas.height !== id.height) {
+					resizeCanvasToImage(id.width, id.height);
+				}
+				if (useWebGL && gl && program) {
+					gl.useProgram(program);
+					gl.clearColor(0.0, 0.0, 0.0, 1.0);
+					gl.clear(gl.COLOR_BUFFER_BIT);
+					gl.bindTexture(gl.TEXTURE_2D, texture);
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, id.width, id.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, id.data);
+					gl.bindBuffer(gl.ARRAY_BUFFER, gl.positionBuffer);
+					gl.enableVertexAttribArray(gl.positionLocation);
+					gl.vertexAttribPointer(gl.positionLocation, 2, gl.FLOAT, false, 0, 0);
+					gl.bindBuffer(gl.ARRAY_BUFFER, gl.texCoordBuffer);
+					gl.enableVertexAttribArray(gl.texCoordLocation);
+					gl.vertexAttribPointer(gl.texCoordLocation, 2, gl.FLOAT, false, 0, 0);
+					gl.activeTexture(gl.TEXTURE0);
+					gl.bindTexture(gl.TEXTURE_2D, texture);
+					gl.uniform1i(gl.textureLocation, 0);
+					gl.drawArrays(gl.TRIANGLES, 0, 6);
+				} else if (ctx) {
+					ctx.putImageData(id, 0, 0);
+				}
+			}
 			
 			if (latestImageBitmap) {
 				// Resize canvas to match image dimensions for 1:1 pixel ratio
@@ -443,12 +471,34 @@
 			}
 		}
 
+		function dispatchBinaryFrame(buf) {
+			const u8 = new Uint8Array(buf);
+			if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xD8) {
+				queueFrame(new Blob([u8], { type: 'image/jpeg' }));
+				return;
+			}
+			if (u8.length < 8) return;
+			const dv = new DataView(buf);
+			const w = dv.getUint32(0, false);
+			const h = dv.getUint32(4, false);
+			if (!w || !h || w > 16384 || h > 16384) return;
+			if (u8.length !== 8 + w * h * 4) {
+				console.warn('[blackscreen] raw frame size mismatch', u8.length, 8 + w * h * 4);
+				return;
+			}
+			pendingRawImageData = new ImageData(new Uint8ClampedArray(u8.subarray(8)), w, h);
+			totalFramesReceived++;
+			if (!renderLoopActive && ws && ws.readyState === WebSocket.OPEN) {
+				renderLoopActive = true;
+				requestAnimationFrame(renderFrame);
+			}
+		}
+
 		function connectWebSocket() {
 			try {
 				ws = new WebSocket('ws://127.0.0.1:' + wsPort + '/frames');
 				
-				// Configure WebSocket to receive binary messages as Blob (most efficient)
-				ws.binaryType = 'blob';
+				ws.binaryType = 'arraybuffer';
 				
 				ws.onopen = function() {
 					console.log('[blackscreen] WebSocket connected');
@@ -461,14 +511,13 @@
 				};
 
 				ws.onmessage = function(event) {
-					if (event.data instanceof Blob) {
-						// Binary message received - create blob for ImageBitmap
-						queueFrame(event.data);
-					} else if (event.data instanceof ArrayBuffer) {
-						// ArrayBuffer received - convert to blob
-						queueFrame(new Blob([event.data], { type: 'image/jpeg' }));
+					if (event.data instanceof ArrayBuffer) {
+						dispatchBinaryFrame(event.data);
+					} else if (event.data instanceof Blob) {
+						event.data.arrayBuffer().then(dispatchBinaryFrame).catch(function(e) {
+							console.error('[blackscreen] arrayBuffer failed:', e);
+						});
 					} else {
-						// Fallback for text (shouldn't happen with binary messages)
 						console.warn('[blackscreen] Received non-binary message');
 					}
 				};

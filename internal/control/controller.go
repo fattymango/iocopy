@@ -6,10 +6,12 @@ import (
 	"copy/internal/shared"
 	"copy/internal/wire"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
 	"runtime"
+	"sync"
 )
 
 // Controller captures local input and sends it to the remote peer
@@ -17,6 +19,26 @@ type Controller struct {
 	client      *wire.Client
 	stopCh      chan struct{}
 	blackScreen BlackScreen
+
+	streamMu sync.Mutex
+	streamW  int
+	streamH  int
+}
+
+type screenStreamMeta struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+func packRGBAWebSocketFrame(width, height int, pix []byte) []byte {
+	if width <= 0 || height <= 0 || len(pix) != width*height*4 {
+		return nil
+	}
+	out := make([]byte, 8+len(pix))
+	binary.BigEndian.PutUint32(out[0:4], uint32(width))
+	binary.BigEndian.PutUint32(out[4:8], uint32(height))
+	copy(out[8:], pix)
+	return out
 }
 
 // NewController creates a new input controller
@@ -243,8 +265,42 @@ func (c *Controller) receiveScreenFrames(frameCh chan<- []byte) {
 			}
 
 			// Handle screen frame messages
-			if msg.Type == "screen_frame" {
-				// Decode base64 to bytes for efficient binary transmission
+			if msg.Type == "screen_stream_meta" {
+				var meta screenStreamMeta
+				if err := json.Unmarshal([]byte(msg.Data), &meta); err != nil {
+					log.Printf("[screen] Bad stream meta: %v", err)
+					continue
+				}
+				c.streamMu.Lock()
+				c.streamW, c.streamH = meta.Width, meta.Height
+				c.streamMu.Unlock()
+				log.Printf("[screen] Stream metadata %dx%d", meta.Width, meta.Height)
+				continue
+			}
+			if msg.Type == "screen_frame_binary" {
+				frameBytes, err := wire.ReceiveBinaryFrame(c.client.GetConn())
+				if err != nil {
+					log.Printf("[screen] Failed to receive binary frame: %v", err)
+					continue
+				}
+
+				out := frameBytes
+				c.streamMu.Lock()
+				w, h := c.streamW, c.streamH
+				c.streamMu.Unlock()
+				if w > 0 && h > 0 && len(frameBytes) == w*h*4 {
+					if packed := packRGBAWebSocketFrame(w, h, frameBytes); packed != nil {
+						out = packed
+					}
+				}
+
+				select {
+				case frameCh <- out:
+				default:
+					// Channel full, skip this frame (non-blocking)
+				}
+			} else if msg.Type == "screen_frame" {
+				// Legacy support: decode base64 for backward compatibility
 				frameBytes, err := base64.StdEncoding.DecodeString(msg.Data)
 				if err != nil {
 					log.Printf("[screen] Failed to decode base64 frame: %v", err)
@@ -256,7 +312,6 @@ func (c *Controller) receiveScreenFrames(frameCh chan<- []byte) {
 					// Frame sent successfully
 				default:
 					// Channel full, skip this frame (non-blocking)
-					// This prevents blocking the receiver if display is slow
 				}
 			} else if msg.Type == "control_ack" {
 				log.Printf("[screen] Control acknowledged by remote peer")

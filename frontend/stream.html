@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Screen Stream Viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #000;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #header {
+      background: #1a1a1a;
+      padding: 10px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #333;
+    }
+
+    #status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #f00;
+    }
+
+    .status-dot.connected {
+      background: #0f0;
+    }
+
+    #controls {
+      display: flex;
+      gap: 10px;
+    }
+
+    button {
+      padding: 8px 16px;
+      border-radius: 4px;
+      border: none;
+      background: #2563eb;
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    button:disabled {
+      background: #334155;
+      cursor: not-allowed;
+    }
+
+    #canvas-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      overflow: hidden;
+    }
+
+    #canvas {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+    #info {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <div id="status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Disconnected</span>
+    </div>
+    <div id="controls">
+      <button id="startBtn">Start Stream</button>
+      <button id="stopBtn" disabled>Stop Stream</button>
+    </div>
+  </div>
+
+  <div id="canvas-container">
+    <canvas id="canvas"></canvas>
+    <div id="info">
+      <div>Frames: <span id="frameCount">0</span></div>
+      <div>Size: <span id="frameSize">0</span> KB</div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { GetWebSocketAddress, StartStream, StopStream, IsStreamStarted } from '../wailsjs/go/ui/StreamUI.js';
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const frameCountEl = document.getElementById('frameCount');
+    const frameSizeEl = document.getElementById('frameSize');
+
+    let ws = null;
+    let frameCount = 0;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 10;
+    let wsAddr = '';
+
+    async function init() {
+      try {
+        wsAddr = await GetWebSocketAddress();
+        console.log('[stream] WebSocket address:', wsAddr);
+        
+        // Check if stream is already started
+        const started = await IsStreamStarted();
+        if (started) {
+          connect();
+        }
+      } catch (err) {
+        console.error('[stream] Failed to get WebSocket address:', err);
+        statusText.textContent = 'Error: ' + err;
+      }
+    }
+
+    function updateStatus(connected) {
+      if (connected) {
+        statusDot.classList.add('connected');
+        statusText.textContent = 'Connected';
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+      } else {
+        statusDot.classList.remove('connected');
+        statusText.textContent = 'Disconnected';
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    }
+
+    function connect() {
+      if (!wsAddr) {
+        console.error('[stream] No WebSocket address');
+        return;
+      }
+
+      const url = `ws://${wsAddr}/ws`;
+      console.log('[stream] Connecting to:', url);
+
+      try {
+        ws = new WebSocket(url);
+        ws.binaryType = 'blob';
+
+        ws.onopen = () => {
+          console.log('[stream] WebSocket connected');
+          updateStatus(true);
+          reconnectAttempts = 0;
+        };
+
+        ws.onmessage = (event) => {
+          const blob = event.data;
+          const img = new Image();
+          const url = URL.createObjectURL(blob);
+
+          img.onload = () => {
+            // Set canvas size to match image
+            canvas.width = img.width;
+            canvas.height = img.height;
+
+            // Draw image
+            ctx.drawImage(img, 0, 0);
+
+            // Update stats
+            frameCount++;
+            frameCountEl.textContent = frameCount;
+            frameSizeEl.textContent = (blob.size / 1024).toFixed(1);
+
+            URL.revokeObjectURL(url);
+          };
+
+          img.onerror = (err) => {
+            console.error('[stream] Image load error:', err);
+            URL.revokeObjectURL(url);
+          };
+
+          img.src = url;
+        };
+
+        ws.onerror = (error) => {
+          console.error('[stream] WebSocket error:', error);
+          updateStatus(false);
+        };
+
+        ws.onclose = () => {
+          console.log('[stream] WebSocket closed');
+          updateStatus(false);
+
+          // Attempt reconnect
+          if (reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++;
+            const delay = Math.min(1000 * reconnectAttempts, 10000);
+            console.log(`[stream] Reconnecting in ${delay}ms... (attempt ${reconnectAttempts})`);
+            setTimeout(connect, delay);
+          } else {
+            console.error('[stream] Max reconnect attempts reached');
+            statusText.textContent = 'Connection Failed';
+          }
+        };
+      } catch (error) {
+        console.error('[stream] Failed to create WebSocket:', error);
+        updateStatus(false);
+      }
+    }
+
+    function disconnect() {
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      updateStatus(false);
+    }
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        await StartStream();
+        connect();
+      } catch (err) {
+        console.error('[stream] Failed to start stream:', err);
+      }
+    });
+
+    stopBtn.addEventListener('click', async () => {
+      try {
+        await StopStream();
+        disconnect();
+      } catch (err) {
+        console.error('[stream] Failed to stop stream:', err);
+      }
+    });
+
+    // Initialize on load
+    init();
+  </script>
+</body>
+</html>
+
+
+
+

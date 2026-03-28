@@ -10,4 +10,3 @@ type BlackScreen interface {
 	Show() error
 	Hide()
 }
-

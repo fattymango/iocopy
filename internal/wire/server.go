@@ -7,6 +7,12 @@ import (
 	"net"
 )
 
+func enableTCPNoDelay(conn net.Conn) {
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
+}
+
 type Server struct {
 	addr   string
 	ln     net.Listener
@@ -45,6 +51,7 @@ func (s *Server) Start(onConn func(*Server, net.Conn)) error {
 			}
 			remoteAddr := conn.RemoteAddr()
 			log.Printf("[server] New connection accepted from %s", remoteAddr)
+			enableTCPNoDelay(conn)
 
 			// Handle connection immediately in a separate goroutine to avoid blocking
 			if s.onConn != nil {
